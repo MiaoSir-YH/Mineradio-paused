@@ -603,19 +603,24 @@ async function retryNeteaseSourceMatchPlayback(song, data, idx, token, opts, req
   return retryStarted === true;
 }
 
-async function resolveAlbumGaplessPlaybackData(song) {
+async function resolveAlbumGaplessPlaybackData(song, opts) {
+  opts = opts || {};
   if (!song || song.type === 'local' || song.source === 'local' || song.localUrl) return null;
   var playbackProvider = normalizePlaybackProvider(songProviderKey(song));
-  var requestedQuality = normalizePlaybackQualityForProvider(getProviderPlaybackQuality(playbackProvider), playbackProvider);
+  var requestedQuality = normalizePlaybackQualityForProvider(opts.qualityOverride || getProviderPlaybackQuality(playbackProvider), playbackProvider);
   if (playbackProvider === 'netease' && requestedQuality === 'jymaster' && !hasProviderSvip('netease', loginStatus)) requestedQuality = 'hires';
   var runtimeQualityCap = playbackQualityCapValue(song, playbackProvider);
   if (playbackQualityAboveCap(requestedQuality, playbackProvider, runtimeQualityCap)) requestedQuality = runtimeQualityCap;
   var qualityParam = '&quality=' + encodeURIComponent(requestedQuality);
+  function requestPlaybackUrl(url, requestOpts) {
+    if (opts.timeoutMs) requestOpts.timeoutMs = Math.min(requestOpts.timeoutMs, opts.timeoutMs);
+    return apiJson(url, requestOpts);
+  }
   if (playbackProvider === 'qq') {
-    return apiJson('/api/qq/song/url?mid=' + encodeURIComponent(song.mid || song.songmid || song.id || '') + '&mediaMid=' + encodeURIComponent(song.mediaMid || song.media_mid || '') + qqPlaybackEvidenceQuery(song) + qualityParam, { timeoutMs: 15000 });
+    return requestPlaybackUrl('/api/qq/song/url?mid=' + encodeURIComponent(song.mid || song.songmid || song.id || '') + '&mediaMid=' + encodeURIComponent(song.mediaMid || song.media_mid || '') + qqPlaybackEvidenceQuery(song) + qualityParam, { timeoutMs: 15000 });
   }
   if (playbackProvider === 'kugou') {
-    return apiJson('/api/kugou/song/url?hash=' + encodeURIComponent(song.hash || song.fileHash || song.audioHash || song.id || '') +
+    return requestPlaybackUrl('/api/kugou/song/url?hash=' + encodeURIComponent(song.hash || song.fileHash || song.audioHash || song.id || '') +
       '&albumId=' + encodeURIComponent(song.albumId || song.album_id || '') +
       '&albumAudioId=' + encodeURIComponent(song.albumAudioId || song.album_audio_id || song.mixSongId || '') +
       '&mixSongId=' + encodeURIComponent(song.mixSongId || '') +
@@ -628,15 +633,15 @@ async function resolveAlbumGaplessPlaybackData(song) {
       qualityParam, { timeoutMs: 20000 });
   }
   if (playbackProvider === 'qishui') {
-    return apiJson('/api/qishui/song/url?id=' + encodeURIComponent(song.id || song.providerSongId || '') + qqPlaybackEvidenceQuery(song) + qualityParam, { timeoutMs: 15000 });
+    return requestPlaybackUrl('/api/qishui/song/url?id=' + encodeURIComponent(song.id || song.providerSongId || '') + qqPlaybackEvidenceQuery(song) + qualityParam, { timeoutMs: 15000 });
   }
   if (playbackProvider === 'spotify') {
-    return apiJson('/api/spotify/song/url?id=' + encodeURIComponent(song.id || song.providerSongId || song.spotifyId || '') +
+    return requestPlaybackUrl('/api/spotify/song/url?id=' + encodeURIComponent(song.id || song.providerSongId || song.spotifyId || '') +
       '&spotifyId=' + encodeURIComponent(song.spotifyId || '') +
       '&uri=' + encodeURIComponent(song.spotifyUri || song.uri || '') +
       qualityParam, { timeoutMs: 9000 });
   }
-  return apiJson('/api/song/url?id=' + encodeURIComponent(song.id || '') + neteasePlaybackMatchQuery(song) + qualityParam, { timeoutMs: 14000 });
+  return requestPlaybackUrl('/api/song/url?id=' + encodeURIComponent(song.id || '') + neteasePlaybackMatchQuery(song) + qualityParam, { timeoutMs: 14000 });
 }
 
 function consumeAlbumGaplessPreload(preload) {
@@ -653,6 +658,7 @@ function startAlbumGaplessHandoff(preload, reason) {
     !albumGaplessQueueCanAdvance(currentIdx)
     || preload.index !== currentIdx + 1
     || preload.token !== trackSwitchToken
+    || (preload.providerOrderKey && preload.providerOrderKey !== playbackProviderOrderKey())
     || queueItemKey(playQueue[preload.index]) !== preload.key
   ) {
     if (albumGaplessState.preload === preload) {
@@ -717,6 +723,8 @@ function startAlbumGaplessHandoff(preload, reason) {
     preloadedAudio: preload.media,
     preloadedData: preload.data,
     preloadedProxyAudioUrl: preload.proxyAudioUrl,
+    providerOrderAttempted: preload.providerOrderAttempted,
+    providerOrderKey: preload.providerOrderKey,
   })).then(function (success) {
     var adopted = success === true
       && audio === preload.media
@@ -744,6 +752,7 @@ function armAlbumGaplessMonitor(token) {
       !preload
       || token !== trackSwitchToken
       || preload.token !== token
+      || (preload.providerOrderKey && preload.providerOrderKey !== playbackProviderOrderKey())
       || preload.index !== currentIdx + 1
       || queueItemKey(playQueue[preload.index]) !== preload.key
       || !albumGaplessQueueCanAdvance(currentIdx)
@@ -793,20 +802,12 @@ async function scheduleAlbumGaplessPreloadForCurrent(token, reason) {
   clearAlbumGaplessPreload(reason || 'album-gapless-new-preload');
   var serial = ++albumGaplessState.serial;
   try {
-    var resolvedSong = nextSong;
-    var data = await resolveAlbumGaplessPlaybackData(nextSong);
-    if ((!data || !data.url) && typeof searchAlternatePlatformSong === 'function') {
-      var alternate = await searchAlternatePlatformSong(nextSong);
-      if (alternate) {
-        alternate.__albumGaplessKey = albumGaplessState.albumKey;
-        alternate.__albumTrackIndex = nextSong && nextSong.__albumTrackIndex;
-        var alternateData = await resolveAlbumGaplessPlaybackData(alternate);
-        if (alternateData && alternateData.url) {
-          resolvedSong = alternate;
-          data = alternateData;
-        }
-      }
-    }
+    var resolution = await resolvePlaybackByProviderOrder(nextSong, {
+      isCurrent: function () { return serial === albumGaplessState.serial && token === trackSwitchToken && sourceIdx === currentIdx; }
+    });
+    if (!resolution) return false;
+    var resolvedSong = resolution.song;
+    var data = resolution.data;
     if (
       serial !== albumGaplessState.serial
       || token !== trackSwitchToken
@@ -841,6 +842,8 @@ async function scheduleAlbumGaplessPreloadForCurrent(token, reason) {
       media: media,
       data: data,
       song: resolvedSong,
+      providerOrderAttempted: resolution.attempted,
+      providerOrderKey: resolution.orderKey,
       proxyAudioUrl: proxyAudioUrl,
     };
     armAlbumGaplessMonitor(token);
@@ -1046,7 +1049,6 @@ async function playQueueAt(idx, opts) {
     markPlayPhase('track-setup');
     var song = safePlaybackStep('hydrate-song', function () { return hydrateCustomCover(playQueue[idx]); }) || playQueue[idx];
     playQueue[idx] = song;
-    var sameAlbumCoverSwitch = albumGaplessSameAlbumCover(previousSongForTransition, song);
     var earlyLyricFetchStarted = false;
     function startTrackLyricFetch() {
       if (earlyLyricFetchStarted) return false;
@@ -1073,12 +1075,43 @@ async function playQueueAt(idx, opts) {
     if (restoreResumeAt > 0 && typeof requestStageLyricRestoreWarmup === 'function') {
       requestStageLyricRestoreWarmup(restoreResumeAt, token, 'startup-restore');
     }
+    if (!albumGaplessHandoff) pauseCurrentAudioForTrackSwitch();
+    var priorityResolution = null;
+    if (albumGaplessHandoff && opts.preloadedSong) {
+      song = hydrateCustomCover(opts.preloadedSong);
+      playQueue[idx] = song;
+    } else if (shouldResolvePlaybackProviderOrder(song, opts)) {
+      markPlayPhase('provider-order');
+      safePlaybackStep('provider-order-loading', function () { showLoading({ trackSwitch: true, seamlessCover: true }); });
+      var priorityQueue = playQueue;
+      var prioritySong = song;
+      var priorityRecovery = sourceFallbackRecoveryFromOptions(opts);
+      function priorityInvocationStillCurrent() {
+        return token === trackSwitchToken && currentIdx === idx && playQueue === priorityQueue && playQueue[idx] === prioritySong
+          && (!priorityRecovery || sourceFallbackRecoveryCanContinue(priorityRecovery));
+      }
+      priorityResolution = await resolvePlaybackByProviderOrder(song, {
+        qualityOverride: opts.qualityOverride,
+        deadlineAt: priorityRecovery && priorityRecovery.deadlineAt,
+        isCurrent: priorityInvocationStillCurrent
+      });
+      if (token !== trackSwitchToken || currentIdx !== idx || playQueue !== priorityQueue || playQueue[idx] !== prioritySong) return false;
+      if (priorityRecovery && !sourceFallbackRecoveryCanContinue(priorityRecovery)) return settleExpiredSourceFallbackPlayback(idx, token, opts);
+      // Reordering while a request is in flight invalidates the old selection.
+      if (!priorityResolution) return playQueueAt(idx, opts);
+      song = hydrateCustomCover(priorityResolution.song);
+      playQueue[idx] = song;
+      opts = Object.assign({}, opts, {
+        providerOrderAttempted: priorityResolution.attempted,
+        providerOrderKey: priorityResolution.orderKey
+      });
+    }
+    var sameAlbumCoverSwitch = albumGaplessSameAlbumCover(previousSongForTransition, song);
     var playbackContext = opts.context || (song && song.radioContext) || null;
     activeRadioContext = playbackContext || null;
     safeRenderQueuePanel('play-queue-at-switch', { scrollCurrent: miniQueueOpen });
     safePlaybackStep('shelf-preview-suppress', suppressShelfPreviewForPlaybackSwitch);
-    if (!albumGaplessHandoff) pauseCurrentAudioForTrackSwitch();
-    else {
+    if (albumGaplessHandoff) {
       playToggleBusy = false;
       forcePlaybackControlsInteractive();
     }
@@ -1170,6 +1203,8 @@ async function playQueueAt(idx, opts) {
       var data;
       if (albumGaplessHandoff) {
         data = opts.preloadedData;
+      } else if (priorityResolution) {
+        data = priorityResolution.data;
       } else if (opts.preResolvedPlaybackData && opts.preResolvedPlaybackData.url) {
         data = opts.preResolvedPlaybackData;
       } else if (isQQPlayback) {
@@ -1426,7 +1461,7 @@ async function playQueueAt(idx, opts) {
         var mediaFailureRecovery = typeof sourceFallbackRecoveryFromOptions === 'function'
           ? sourceFallbackRecoveryFromOptions(retryPlaybackOpts)
           : null;
-        if (!opts.manual && (!opts.startupAutoplay || mediaFailureRecovery)) {
+        if (Array.isArray(opts.providerOrderAttempted) || (!opts.manual && (!opts.startupAutoplay || mediaFailureRecovery))) {
           var mediaFailureFallback = await tryAutoPlaybackFallback(
             song,
             Object.assign({}, data || {}, { url: null, reason: 'media_start_failed' }),

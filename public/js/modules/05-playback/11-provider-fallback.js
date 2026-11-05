@@ -300,7 +300,7 @@ function isSameTitleArtist(source, candidate) {
   return a.some(function (name) { return b.indexOf(name) >= 0; });
 }
 var SOURCE_FALLBACK_SEARCH_TIMEOUT_MS = 6500;
-var SOURCE_FALLBACK_DIRECT_PROVIDERS = ['netease', 'qq', 'kugou'];
+var SOURCE_FALLBACK_DIRECT_PROVIDERS = ['netease', 'qq', 'kugou', 'qishui'];
 var SOURCE_FALLBACK_RECOVERY_TIMEOUT_MS = 20000;
 var SOURCE_FALLBACK_MAX_QUEUE_ADVANCES = 2;
 var SOURCE_FALLBACK_MAX_PROVIDER_ATTEMPTS = 4;
@@ -391,6 +391,9 @@ function sourceFallbackQueuePlaybackOptions(opts, recovery) {
   delete next.preloadedAudio;
   delete next.preloadedData;
   delete next.preloadedProxyAudioUrl;
+  delete next.providerOrderAttempted;
+  delete next.providerOrderKey;
+  delete next.preloadedSong;
   next.fallbackDepth = 0;
   next.sourceFallbackRecovery = recovery;
   return next;
@@ -457,6 +460,7 @@ function awaitSourceFallbackBudget(promise, recovery) {
 function sourceFallbackProviderTitle(provider) {
   if (provider === 'qq') return 'QQ 音乐';
   if (provider === 'kugou') return '酷狗音乐';
+  if (provider === 'qishui') return '汽水音乐';
   return '网易云';
 }
 function sourceFallbackProviderReady(provider) {
@@ -465,27 +469,110 @@ function sourceFallbackProviderReady(provider) {
   var status = typeof platformStatus === 'function' ? platformStatus(provider) : null;
   if (!status || !status.loggedIn) return false;
   if (provider === 'qq' || provider === 'kugou') return status.playbackKeyReady === true;
+  if (provider === 'qishui') return status.playbackMode === 'direct-url' || status.playbackKeyReady === true || !!(status.capabilities && status.capabilities.playableUrl);
   return true;
 }
-function alternatePlaybackProviders(song) {
-  var currentProvider = normalizePlaybackProvider(songProviderKey(song));
+function playbackProviderOrder() {
   var ordered = typeof accountProviderOrder === 'function'
     ? accountProviderOrder()
     : SOURCE_FALLBACK_DIRECT_PROVIDERS.slice();
   var seen = {};
   var providers = [];
   ordered.concat(SOURCE_FALLBACK_DIRECT_PROVIDERS).forEach(function (provider) {
-    provider = normalizePlaybackProvider(provider);
-    if (seen[provider] || provider === currentProvider || !sourceFallbackProviderReady(provider)) return;
+    if (seen[provider] || SOURCE_FALLBACK_DIRECT_PROVIDERS.indexOf(provider) < 0) return;
     seen[provider] = true;
     providers.push(provider);
   });
   return providers;
 }
+function playbackProviderOrderKey() {
+  return playbackProviderOrder().join('|');
+}
+function alternatePlaybackProviders(song) {
+  var currentProvider = normalizePlaybackProvider(songProviderKey(song));
+  return playbackProviderOrder().filter(function (provider) {
+    return provider !== currentProvider && sourceFallbackProviderReady(provider);
+  });
+}
+function shouldResolvePlaybackProviderOrder(song, opts) {
+  opts = opts || {};
+  return !!(song
+    && song.type !== 'local' && song.source !== 'local' && !song.localUrl
+    && song.type !== 'podcast' && song.source !== 'podcast'
+    && SOURCE_FALLBACK_DIRECT_PROVIDERS.indexOf(songProviderKey(song)) >= 0
+    && !opts.sourceSwitch && !opts.qualitySwitch && !opts.resumeRecovery
+    && !opts.fallbackDepth && !opts.albumGaplessHandoff
+    && !opts.preResolvedPlaybackData && !Array.isArray(opts.providerOrderAttempted));
+}
+function inheritPlaybackSourceContext(song, candidate) {
+  if (candidate === song) return song;
+  candidate = cloneSong(candidate);
+  var albumKey = typeof albumGaplessSongKey === 'function' ? albumGaplessSongKey(song) : song.__albumGaplessKey;
+  if (albumKey) candidate.__albumGaplessKey = albumKey;
+  if (song.__albumTrackIndex != null) candidate.__albumTrackIndex = song.__albumTrackIndex;
+  if (song.radioContext) candidate.radioContext = song.radioContext;
+  return candidate;
+}
+async function resolvePlaybackByProviderOrder(song, opts) {
+  opts = opts || {};
+  if (!shouldResolvePlaybackProviderOrder(song, {})) return null;
+  var orderKey = playbackProviderOrderKey();
+  var originalProvider = songProviderKey(song);
+  var providers = playbackProviderOrder().filter(function (provider) {
+    // The original catalogue entry can still be a public/free track without a login.
+    return provider === originalProvider || sourceFallbackProviderReady(provider);
+  });
+  // Each request has its own timeout. Only an existing recovery transaction
+  // supplies a shared deadline; a slow first provider must not skip the next one.
+  var deadlineAt = Number(opts.deadlineAt) || Infinity;
+  var attempted = [];
+  var originalData = null;
+  function stillCurrent() {
+    return orderKey === playbackProviderOrderKey() && (!opts.isCurrent || opts.isCurrent());
+  }
+  for (var i = 0; i < providers.length; i++) {
+    if (!stillCurrent()) return null;
+    if (Date.now() >= deadlineAt) break;
+    var provider = providers[i];
+    attempted.push(provider);
+    try {
+      var candidate = provider === originalProvider ? song : await searchAlternatePlatformSong(song, provider, null, {
+        timeoutMs: Math.min(SOURCE_FALLBACK_SEARCH_TIMEOUT_MS, deadlineAt - Date.now())
+      });
+      if (!stillCurrent()) return null;
+      if (!candidate || Date.now() >= deadlineAt) continue;
+      var data = await resolveAlbumGaplessPlaybackData(candidate, {
+        qualityOverride: opts.qualityOverride,
+        timeoutMs: Math.max(1, deadlineAt - Date.now())
+      });
+      if (!stillCurrent()) return null;
+      if (provider === originalProvider) originalData = data;
+      if (data && data.url && !data.trial) {
+        return { song: inheritPlaybackSourceContext(song, candidate), data: data, attempted: attempted, orderKey: orderKey };
+      }
+    } catch (err) {
+      if (!stillCurrent()) return null;
+      console.warn('[PlaybackProviderOrder]', provider, err);
+    }
+  }
+  if (!stillCurrent()) return null;
+  var failure = originalData || { reason: 'url_unavailable' };
+  if (failure.trial) failure = Object.assign({}, failure, { url: null, reason: 'trial_only' });
+  return { song: song, data: failure, attempted: attempted, orderKey: orderKey };
+}
+function invalidatePlaybackProviderOrder() {
+  if (typeof clearAlbumGaplessPreload === 'function') clearAlbumGaplessPreload('provider-order');
+  if (typeof resetCuefieldAutoMix === 'function') resetCuefieldAutoMix('provider-order');
+  if (typeof cuefieldAudioDescriptorCache !== 'undefined') cuefieldAudioDescriptorCache = {};
+  if (typeof audio === 'undefined' || !audio || audio.paused) return;
+  if (typeof scheduleAlbumGaplessPreloadForCurrent === 'function') scheduleAlbumGaplessPreloadForCurrent(trackSwitchToken, 'provider-order');
+  if (typeof scheduleCuefieldAutoMixPrepare === 'function') scheduleCuefieldAutoMixPrepare(trackSwitchToken, currentIdx, 720);
+}
 function alternatePlaybackProvider(song) {
   return alternatePlaybackProviders(song)[0] || '';
 }
-async function searchAlternatePlatformSong(song, requestedTarget, recovery) {
+async function searchAlternatePlatformSong(song, requestedTarget, recovery, opts) {
+  opts = opts || {};
   var target = requestedTarget || alternatePlaybackProvider(song);
   if (!target || !sourceFallbackProviderReady(target)) return null;
   if (recovery && !sourceFallbackRecoveryCanContinue(recovery)) return null;
@@ -496,15 +583,18 @@ async function searchAlternatePlatformSong(song, requestedTarget, recovery) {
     ? '/api/qq/search?keywords=' + encodeURIComponent(query) + '&limit=8'
     : (target === 'kugou'
       ? '/api/kugou/search?keywords=' + encodeURIComponent(query) + '&limit=8'
-      : '/api/search?keywords=' + encodeURIComponent(query) + '&limit=12');
+      : (target === 'qishui'
+        ? '/api/qishui/search?keywords=' + encodeURIComponent(query) + '&limit=8'
+        : '/api/search?keywords=' + encodeURIComponent(query) + '&limit=12'));
   var data = await awaitSourceFallbackBudget(
-    apiJson(url, { timeoutMs: SOURCE_FALLBACK_SEARCH_TIMEOUT_MS }),
+    apiJson(url, { timeoutMs: Math.min(SOURCE_FALLBACK_SEARCH_TIMEOUT_MS, opts.timeoutMs || SOURCE_FALLBACK_SEARCH_TIMEOUT_MS) }),
     recovery
   );
   if (data === sourceFallbackBudgetTimeoutResult || (recovery && !sourceFallbackRecoveryCanContinue(recovery))) return null;
   var list = data && (data.songs || data.result || []);
   for (var i = 0; i < list.length; i++) {
     if (typeof sourceCandidateRejectReason === 'function' && sourceCandidateRejectReason(song, list[i], target)) continue;
+    if (typeof searchVersionSignature === 'function' && searchVersionSignature((song.name || song.title || '') + ' ' + (song.album || '')) !== searchVersionSignature((list[i].name || list[i].title || '') + ' ' + (list[i].album || ''))) continue;
     if (isSameTitleArtist(song, list[i])) return cloneSong(list[i]);
   }
   return null;
@@ -656,7 +746,8 @@ async function tryAutoPlaybackFallback(song, data, idx, token, opts) {
   if (!song || song.type === 'local' || song.type === 'podcast' || song.source === 'podcast') return null;
   var category = playbackRestrictionCategory(song, data);
   var fromLabel = playbackProviderLabel(song);
-  var alternateProviders = alternatePlaybackProviders(song);
+  var attemptedProviders = Array.isArray(opts.providerOrderAttempted) ? opts.providerOrderAttempted : [];
+  var alternateProviders = alternatePlaybackProviders(song).filter(function (provider) { return attemptedProviders.indexOf(provider) < 0; });
   if (!alternateProviders.length && category === 'login_required') return null;
   var recovery = ensureSourceFallbackRecovery(opts, song, idx, token);
   if (!recovery) return false;
@@ -701,7 +792,7 @@ async function tryAutoPlaybackFallback(song, data, idx, token, opts) {
       if (alternateData === sourceFallbackBudgetTimeoutResult || !sourceFallbackRecoveryCanContinue(recovery)) {
         return settleSourceFallbackTerminal(idx, token, '自动恢复已达到时间上限，请稍后手动重试。', skipOpts);
       }
-      if (!alternateData || !alternateData.url) continue;
+      if (!alternateData || !alternateData.url || alternateData.trial) continue;
       var originalSong = playQueue[idx];
       alternate.autoFallbackFrom = songProviderKey(song);
       var committedCandidate = hydrateCustomCover(alternate);

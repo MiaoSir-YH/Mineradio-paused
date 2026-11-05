@@ -307,8 +307,8 @@ function updateLoginProviderCapsuleStatus(provider, btn) {
     btn.insertBefore(handle, btn.firstChild);
   }
   handle.setAttribute('data-login-provider-sort', provider);
-  handle.setAttribute('title', 'Drag to sort');
-  handle.setAttribute('aria-label', 'Drag to sort');
+  handle.setAttribute('title', '拖动调整播放音源顺序，从上到下依次尝试');
+  handle.setAttribute('aria-label', '拖动调整播放音源顺序');
   var logo = btn.querySelector('.provider-logo');
   if (logo) {
     if (st.loggedIn) {

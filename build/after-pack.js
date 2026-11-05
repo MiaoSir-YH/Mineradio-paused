@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { getRceditBundle } = require('app-builder-lib/out/toolsets/windows');
+const { WineVmManager } = require('app-builder-lib/out/vm/WineVm');
 
 function findNewestRceditInCache(cacheRoot) {
   if (!cacheRoot || !fs.existsSync(cacheRoot)) return null;
@@ -25,7 +26,7 @@ function findNewestRceditInCache(cacheRoot) {
   return newest && newest.path;
 }
 
-function resolveRcedit(projectDir) {
+async function resolveRcedit(projectDir, winCodeSign) {
   var candidates = [
     path.join(projectDir, 'node_modules', 'rcedit', 'bin', 'rcedit-x64.exe')
   ];
@@ -36,8 +37,7 @@ function resolveRcedit(projectDir) {
   }
   candidates.push(path.join(projectDir, 'node_modules', 'electron-winstaller', 'vendor', 'rcedit.exe'));
   var hit = candidates.find(function(candidate) { return candidate && fs.existsSync(candidate); });
-  if (!hit) throw new Error('No usable rcedit executable was found for Mineradio icon injection.');
-  return hit;
+  return hit || (await getRceditBundle(winCodeSign)).x64;
 }
 
 module.exports = async function afterPack(context) {
@@ -48,21 +48,24 @@ module.exports = async function afterPack(context) {
   const companyName = context.packager.appInfo.companyName || productName;
   const exePath = path.join(context.appOutDir, `${appName}.exe`);
   const iconPath = path.join(context.packager.info.buildResourcesDir, 'icon.ico');
-  const rceditPath = resolveRcedit(context.packager.projectDir);
+  const toolsets = context.packager.config.toolsets || {};
+  const rceditPath = await resolveRcedit(context.packager.projectDir, toolsets.winCodeSign);
+  const vm = new WineVmManager(toolsets.wine);
+  const resourcePath = file => process.platform === 'win32' ? file : vm.toVmFile(file);
 
   if (!fs.existsSync(exePath)) throw new Error(`Mineradio executable was not found: ${exePath}`);
   if (!fs.existsSync(iconPath)) throw new Error(`Mineradio icon was not found: ${iconPath}`);
 
   const version = context.packager.appInfo.version;
   console.log(`  • injecting Mineradio resources  rcedit=${rceditPath}`);
-  execFileSync(rceditPath, [
-    exePath,
-    '--set-icon', iconPath,
+  await vm.exec(rceditPath, [
+    resourcePath(exePath),
+    '--set-icon', resourcePath(iconPath),
     '--set-version-string', 'FileDescription', productName,
     '--set-version-string', 'ProductName', productName,
     '--set-version-string', 'CompanyName', companyName,
     '--set-version-string', 'OriginalFilename', `${appName}.exe`,
     '--set-file-version', version,
     '--set-product-version', version
-  ], { stdio: 'inherit' });
+  ]);
 };
