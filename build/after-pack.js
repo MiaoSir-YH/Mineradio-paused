@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getRceditBundle } = require('app-builder-lib/out/toolsets/windows');
 const { WineVmManager } = require('app-builder-lib/out/vm/WineVm');
+const { writeInstallManifest } = require('./install-manifest');
 
 function findNewestRceditInCache(cacheRoot) {
   if (!cacheRoot || !fs.existsSync(cacheRoot)) return null;
@@ -68,4 +69,5 @@ module.exports = async function afterPack(context) {
     '--set-file-version', version,
     '--set-product-version', version
   ]);
+  writeInstallManifest(context.appOutDir, context.packager.appInfo.id);
 };

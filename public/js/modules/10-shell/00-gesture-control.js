@@ -417,6 +417,7 @@ async function startGestureControl() {
 
 async function startGestureControlInternal(epoch) {
   showToast('正在加载手势识别…');
+  var ownedVideo = null, ownedHands = null, ownedCamera = null;
   try {
     var desktopApi = typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : window.desktopWindow;
     if (desktopApi && typeof desktopApi.requestGestureCameraPermission === 'function') {
@@ -428,28 +429,29 @@ async function startGestureControlInternal(epoch) {
     await loadScriptOnce('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
     await loadScriptOnce('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
     if (epoch !== gestureStartEpoch || fx.cam !== 'gesture') return false;
-    gestureVideo = document.createElement('video');
+    gestureVideo = ownedVideo = document.createElement('video');
     gestureVideo.playsInline = true; gestureVideo.muted = true;
     gestureVideo.style.display = 'none';
     document.body.appendChild(gestureVideo);
-    gestureHands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/' + f; } });
+    gestureHands = ownedHands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/' + f; } });
     // modelComplexity:1 比 0 更稳定, 但仍流畅. 提高 confidence 减少误检
     gestureHands.setOptions({ maxNumHands: 1, modelComplexity: gestureModelComplexity(), minDetectionConfidence: 0.58, minTrackingConfidence: 0.55 });
     gestureHands.onResults(function (res) {
-      if (!gestureActive) return;
+      if (epoch !== gestureStartEpoch || gestureHands !== ownedHands || !gestureActive) return;
       var lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
       if (!lm) { onHandLost(); return; }
       processHandFrame(lm);
     });
-    gestureCamera = new Camera(gestureVideo, { onFrame: async function () {
-      if (!gestureHands || gestureInferenceBusy || !gestureHostVisible()) return;
+    gestureCamera = ownedCamera = new Camera(ownedVideo, { onFrame: async function () {
+      if (epoch !== gestureStartEpoch || gestureHands !== ownedHands || gestureInferenceBusy || !gestureHostVisible()) return;
       var now = performance.now();
       if (now - gestureLastInferenceAt < gestureInferenceIntervalMs()) return;
       gestureLastInferenceAt = now;
       gestureInferenceBusy = true;
       try {
-        await gestureHands.send({ image: gestureVideo });
+        await ownedHands.send({ image: ownedVideo });
       } catch (error) {
+        if (epoch !== gestureStartEpoch || gestureHands !== ownedHands) return;
         // camera_utils 只会在 onFrame Promise resolve 后排下一帧；这里若把
         // 单帧错误继续抛出，整条摄像头 RAF 会永久停止。
         gestureInferenceErrorCount++;
@@ -459,11 +461,11 @@ async function startGestureControlInternal(epoch) {
         }
         onHandLost();
       }
-      finally { gestureInferenceBusy = false; }
+      finally { if (epoch === gestureStartEpoch && gestureHands === ownedHands) gestureInferenceBusy = false; }
     }, width: 480, height: 360 });
-    await gestureCamera.start();
+    await ownedCamera.start();
     if (epoch !== gestureStartEpoch || fx.cam !== 'gesture') {
-      cleanupGestureControlRuntime();
+      disposeGestureControlResources(ownedVideo, ownedHands, ownedCamera);
       return false;
     }
     gestureActive = true;
@@ -479,7 +481,7 @@ async function startGestureControlInternal(epoch) {
     return true;
   } catch (e) {
     if (epoch !== gestureStartEpoch || !fx || fx.cam !== 'gesture') {
-      cleanupGestureControlRuntime(fx && fx.cam === 'gesture' ? 'suspended' : 'off');
+      disposeGestureControlResources(ownedVideo, ownedHands, ownedCamera);
       return false;
     }
     console.warn('Gesture failed:', e);
@@ -491,11 +493,15 @@ async function startGestureControlInternal(epoch) {
   }
 }
 
+function disposeGestureControlResources(video, hands, camera) {
+  function ignoreRejection(result) { if (result && result.catch) result.catch(function () {}); }
+  try { if (camera && camera.stop) ignoreRejection(camera.stop()); } catch (e) { }
+  try { if (video && video.srcObject) video.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+  try { if (hands && hands.close) ignoreRejection(hands.close()); } catch (e) { }
+  try { if (video) video.remove(); } catch (e) { }
+}
 function cleanupGestureControlRuntime(nextState) {
-  try { if (gestureCamera && gestureCamera.stop) gestureCamera.stop(); } catch (e) { }
-  try { if (gestureVideo && gestureVideo.srcObject) gestureVideo.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
-  try { if (gestureHands && gestureHands.close) gestureHands.close(); } catch (e) { }
-  try { if (gestureVideo) gestureVideo.remove(); } catch (e) { }
+  disposeGestureControlResources(gestureVideo, gestureHands, gestureCamera);
   gestureVideo = null; gestureHands = null; gestureCamera = null;
   gestureActive = false;
   gestureInferenceBusy = false;

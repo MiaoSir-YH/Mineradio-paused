@@ -924,6 +924,7 @@ async function playLocalQueueSong(song, idx, token, firstVisualPlay, opts, resum
   audio.src = song.localUrl;
   audio.__mineradioQueueItemKey = queueItemKey(song);
   audio.__mineradioTrackSwitchToken = token;
+  if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession('local-source');
   updatePlaybackProgressUi();
   lyricSunEnergy = 0; lyricSunTarget = 0; lyricSunHold = 0; lyricSunAvg = 0; lyricSunPeak = 0.55;
   audio.onended = function () {
@@ -990,6 +991,7 @@ async function playQueueAt(idx, opts) {
   opts = opts || {};
   if (typeof beginSourceFallbackPlaybackInvocation === 'function' && !beginSourceFallbackPlaybackInvocation(opts)) return false;
   if (idx < 0 || idx >= playQueue.length) return false;
+  if (typeof closeControlSourceSwitcher === 'function') closeControlSourceSwitcher();
   if (typeof ensurePlaylistQueueHydratedAhead === 'function') ensurePlaylistQueueHydratedAhead(idx);
   var albumGaplessHandoff = !!(opts.albumGaplessHandoff && opts.preloadedAudio && opts.preloadedData);
   var albumGaplessMixed = !!(albumGaplessHandoff && opts.albumGaplessMixed);
@@ -1351,6 +1353,7 @@ async function playQueueAt(idx, opts) {
       if (!albumGaplessHandoff) audio.src = proxyAudioUrl;
       audio.__mineradioQueueItemKey = queueItemKey(song);
       audio.__mineradioTrackSwitchToken = token;
+      if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession('audio-handoff');
       updatePlaybackProgressUi();
       audio.onended = function () {
         if (token !== trackSwitchToken) return;

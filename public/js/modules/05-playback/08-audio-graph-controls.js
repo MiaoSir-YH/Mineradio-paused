@@ -1,4 +1,5 @@
 // ============================================================
+var audioPauseFadeResolve = null;
 function audioGraphHealthy() {
   return !!(audio && audioReady && audioCtx && audioCtx.state !== 'closed' && source && audioSourceMedia === audio && analyser && beatAnalyser && (gainNode || analysisSinkNode));
 }
@@ -41,6 +42,7 @@ function replaceAudioElementForGraphRecovery(reason, opts) {
   var endedHandler = preservePlayback ? oldAudio.onended : null;
   var metadataHandler = preservePlayback ? oldAudio.onloadedmetadata : null;
   var queueItemKey = oldAudio.__mineradioQueueItemKey;
+  var switchToken = oldAudio.__mineradioTrackSwitchToken;
   try { oldAudio.pause(); } catch (e) { }
   disconnectAudioGraphNodes(false);
   try {
@@ -55,6 +57,8 @@ function replaceAudioElementForGraphRecovery(reason, opts) {
   audio.onended = endedHandler;
   audio.onloadedmetadata = metadataHandler;
   audio.__mineradioQueueItemKey = queueItemKey;
+  audio.__mineradioTrackSwitchToken = switchToken;
+  audio.__mineradioUserPauseToken = oldAudio.__mineradioUserPauseToken;
   bindPlaybackProgressEvents(audio);
   applyVolumeToAudio();
   if (src) {
@@ -65,6 +69,7 @@ function replaceAudioElementForGraphRecovery(reason, opts) {
     }
   }
   applyAudioOutputDevice(audio);
+  if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession('audio-recovery');
   console.warn('audio graph recovery:', reason || 'unknown');
   return true;
 }
@@ -378,6 +383,11 @@ function clearAudioFadeTimers() {
     clearTimeout(audioFadeTimer);
     audioFadeTimer = null;
   }
+  if (audioPauseFadeResolve) {
+    var resolvePause = audioPauseFadeResolve;
+    audioPauseFadeResolve = null;
+    resolvePause(false);
+  }
   cancelAudioElementFadeFrame();
   clearAudioAudibilityRecoveryTimers();
 }
@@ -541,8 +551,10 @@ function fadeOutAndPauseAudio() {
   var serial = ++audioFadeSerial;
   rampAudioOutputGain(0, AUDIO_FADE_OUT_MS);
   return new Promise(function (resolve) {
+    audioPauseFadeResolve = resolve;
     audioFadeTimer = setTimeout(function () {
       audioFadeTimer = null;
+      if (audioPauseFadeResolve === resolve) audioPauseFadeResolve = null;
       if (serial !== audioFadeSerial || !audio) {
         resolve(false);
         return;

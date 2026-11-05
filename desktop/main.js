@@ -3658,11 +3658,13 @@ while ($true) {
 }
 `;
   try {
-    desktopLyricsMousePoller = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    desktopLyricsMousePoller.stdout.on('data', (chunk) => {
+    desktopLyricsMousePoller = child;
+    child.stdout.on('data', (chunk) => {
+      if (desktopLyricsMousePoller !== child) return;
       desktopLyricsMousePollerBuffer += chunk.toString('utf8');
       const lines = desktopLyricsMousePollerBuffer.split(/\r?\n/);
       desktopLyricsMousePollerBuffer = lines.pop() || '';
@@ -3670,11 +3672,13 @@ while ($true) {
         if (line.trim() === 'MMB') handleDesktopLyricsGlobalMiddleClick();
       });
     });
-    desktopLyricsMousePoller.on('exit', () => {
+    child.on('exit', () => {
+      if (desktopLyricsMousePoller !== child) return;
       desktopLyricsMousePoller = null;
       desktopLyricsMousePollerBuffer = '';
     });
-    desktopLyricsMousePoller.on('error', () => {
+    child.on('error', () => {
+      if (desktopLyricsMousePoller !== child) return;
       desktopLyricsMousePoller = null;
       desktopLyricsMousePollerBuffer = '';
     });
@@ -3772,13 +3776,15 @@ function createDesktopLyricsWindow(payload = {}) {
   startDesktopLyricsMousePoller();
   applyDesktopLyricsMouseBehavior();
   positionDesktopLyricsWindow(desktopLyricsState, { force: yChanged || !desktopLyricsUserBounds });
-  desktopLyricsWindow.once('ready-to-show', () => {
-    if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) return;
-    desktopLyricsWindow.showInactive();
+  const lyricsWindow = desktopLyricsWindow;
+  lyricsWindow.once('ready-to-show', () => {
+    if (desktopLyricsWindow !== lyricsWindow || lyricsWindow.isDestroyed()) return;
+    lyricsWindow.showInactive();
     sendDesktopLyricsState();
   });
   desktopLyricsWindow.webContents.once('did-finish-load', sendDesktopLyricsState);
   desktopLyricsWindow.on('closed', () => {
+    if (desktopLyricsWindow !== lyricsWindow) return;
     desktopLyricsWindow = null;
     desktopLyricsMouseIgnored = null;
   });
@@ -4881,7 +4887,7 @@ ipcMain.handle('mineradio-open-update-page', async (event, value) => {
 ipcMain.handle('mineradio-restart-app', async () => {
   try {
     app.relaunch();
-    app.exit(0);
+    app.quit();
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || 'RESTART_FAILED' };

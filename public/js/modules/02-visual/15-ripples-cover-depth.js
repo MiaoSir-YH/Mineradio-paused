@@ -532,6 +532,7 @@ function setControlCoverSrc(src) {
 }
 
 function updateControlTrackInfo(song) {
+  if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession('track-info');
   song = song || {};
   var title = document.getElementById('control-title');
   var artist = document.getElementById('control-artist');

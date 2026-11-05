@@ -89,6 +89,8 @@ function setLoginAuthDrawerOpen(open) {
   if (modal) modal.classList.toggle('login-details-open', !!open);
   if (drawer) drawer.classList.toggle('show', !!open);
   if (!open) {
+    loginRefreshRequestSeq += 1;
+    qrKey = null;
     loginWorkflowPendingProvider = '';
     try { stopQrPoll(); } catch (e) { }
   }
@@ -593,6 +595,8 @@ function resumeLoginModalAfterGate() {
   scheduleLoginWorkflowEdges('open');
 }
 function closeLoginModal() {
+  loginRefreshRequestSeq += 1;
+  qrKey = null;
   stopQrPoll();
   setLoginAuthDrawerOpen(false);
   closeGsapModal(document.getElementById('login-modal'));

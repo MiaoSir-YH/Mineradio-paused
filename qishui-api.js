@@ -136,6 +136,7 @@ function buildQishuiOAuthAuthorizeUrl(state) {
 function createTtlCache(maxEntries, defaultTtlMs) {
   const store = new Map();
   const inflight = new Map();
+  let generation = 0;
   return {
     get(key) {
       const hit = store.get(key);
@@ -150,6 +151,7 @@ function createTtlCache(maxEntries, defaultTtlMs) {
       }
     },
     clear() {
+      generation += 1;
       store.clear();
       inflight.clear();
     },
@@ -157,11 +159,14 @@ function createTtlCache(maxEntries, defaultTtlMs) {
       const cached = this.get(key);
       if (cached !== null) return cached;
       if (inflight.has(key)) return inflight.get(key);
+      const startedGeneration = generation;
       const promise = Promise.resolve().then(fn).then((value) => {
         const resolvedTtlMs = typeof ttlMs === 'function' ? ttlMs(value) : ttlMs;
-        if (resolvedTtlMs !== 0) this.set(key, value, resolvedTtlMs);
+        if (startedGeneration === generation && resolvedTtlMs !== 0) this.set(key, value, resolvedTtlMs);
         return value;
-      }).finally(() => inflight.delete(key));
+      }).finally(() => {
+        if (inflight.get(key) === promise) inflight.delete(key);
+      });
       inflight.set(key, promise);
       return promise;
     },
@@ -1349,8 +1354,23 @@ function qishuiStreamAllowedForMembership(stream, membership) {
   return qishuiRequiredTierAllowed(qishuiStreamRequiredTier(stream), membership);
 }
 
-function qishuiBestStreamCandidateForMembership(candidates, membership) {
-  return qishuiBestStreamCandidate((candidates || []).filter(item => qishuiStreamAllowedForMembership(item, membership)));
+function qishuiBestStreamCandidateForMembership(candidates, membership, requestedQuality) {
+  let allowed = (candidates || []).filter(item => qishuiStreamAllowedForMembership(item, membership));
+  const quality = normalizeText(requestedQuality).toLowerCase();
+  const ceilings = { standard: 50, normal: 50, exhigh: 79, high: 79, lossless: 100, sq: 100, hires: 110, 'hi-res': 110, jymaster: 110 };
+  if (Object.prototype.hasOwnProperty.call(ceilings, quality) && allowed.length) {
+    // Prefer a complete recording over a lower-quality trial of the same song.
+    const longest = Math.max(...allowed.map(item => qishuiNormalizeDurationSeconds(item.duration)));
+    if (longest > 0) allowed = allowed.filter(item => qishuiNormalizeDurationSeconds(item.duration) >= longest - 1);
+    const ranked = item => qishuiQualityRank(item.quality, item.format, item.bitrate);
+    const within = allowed.filter(item => ranked(item) <= ceilings[quality]);
+    if (within.length) allowed = within;
+    else {
+      const lowest = Math.min(...allowed.map(ranked));
+      allowed = allowed.filter(item => ranked(item) === lowest);
+    }
+  }
+  return qishuiBestStreamCandidate(allowed);
 }
 
 function qishuiStreamUrlFrom(value) {
@@ -3282,7 +3302,7 @@ async function fetchQishuiPcTrackV2(trackId, cookieText) {
   });
 }
 
-async function fetchQishuiPlayerInfo(playerInfoUrl, cookieText, membership) {
+async function fetchQishuiPlayerInfo(playerInfoUrl, cookieText, membership, requestedQuality) {
   playerInfoUrl = normalizeText(playerInfoUrl);
   if (!/^https?:\/\//i.test(playerInfoUrl)) return null;
   const json = await requestJson(playerInfoUrl, {
@@ -3297,7 +3317,7 @@ async function fetchQishuiPlayerInfo(playerInfoUrl, cookieText, membership) {
   const data = pickObject(result.Data, result.data, json && json.Data, json && json.data);
   const list = pickArray(data.PlayInfoList, data.playInfoList, data.play_info_list, json && json.PlayInfoList);
   const streams = list.map(item => qishuiStreamFromObject(item)).filter(Boolean);
-  const best = qishuiBestStreamCandidateForMembership(streams, membership);
+  const best = qishuiBestStreamCandidateForMembership(streams, membership, requestedQuality);
   if (best) return best;
   // Keep a blocked candidate internal so the caller can report the precise
   // VIP/SVIP boundary without ever exposing its URL in an unavailable result.
@@ -3328,19 +3348,18 @@ function collectQishuiTrackV2Streams(payload) {
   return { track, player, streams, fallbackStreams };
 }
 
-async function resolveQishuiDownloadInfo(trackId, payload, cookieText, membership) {
+async function resolveQishuiDownloadInfo(trackId, payload, cookieText, membership, requestedQuality) {
   const collected = collectQishuiTrackV2Streams(payload);
   const playerInfoUrl = qishuiObjectString(collected.player, ['url_player_info', 'URLPlayerInfo', 'urlPlayerInfo']);
   if (playerInfoUrl) {
     try {
-      const stream = await fetchQishuiPlayerInfo(playerInfoUrl, cookieText, membership);
+      const stream = await fetchQishuiPlayerInfo(playerInfoUrl, cookieText, membership, requestedQuality);
       if (stream) collected.streams.push(stream);
     } catch (err) {
       collected.playerInfoError = err && err.message || String(err);
     }
   }
-  const best = qishuiBestStreamCandidateForMembership(collected.streams, membership) ||
-    qishuiBestStreamCandidateForMembership(collected.fallbackStreams, membership);
+  const best = qishuiBestStreamCandidateForMembership(collected.streams.concat(collected.fallbackStreams), membership, requestedQuality);
   if (!best) {
     const unrestricted = qishuiBestStreamCandidate(collected.streams) ||
       qishuiBestStreamCandidate(collected.fallbackStreams);
@@ -3450,7 +3469,7 @@ async function handleQishuiSongUrl(opts, cookieText) {
           entitlementEvidence: trackRestriction.evidence.concat(requestRestriction.evidence),
         });
       }
-      const resolved = await resolveQishuiDownloadInfo(id, payload, cookie, membership);
+      const resolved = await resolveQishuiDownloadInfo(id, payload, cookie, membership, requestedQuality);
       const track = resolved.track || {};
       const stream = resolved.best;
       const duration = stream.duration || qishuiNormalizeDurationSeconds(track.duration_ms || track.duration || 0);

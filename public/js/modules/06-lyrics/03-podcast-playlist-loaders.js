@@ -1,3 +1,16 @@
+var playlistQueueLoadSerial = 0;
+function beginQueueLoadRequest() {
+  cancelPlaylistQueueHydration('new-queue-load');
+  return { serial: ++playlistQueueLoadSerial, queue: playQueue, playbackToken: typeof trackSwitchToken === 'undefined' ? 0 : trackSwitchToken };
+}
+function queueLoadRequestCurrent(request) {
+  return request.serial === playlistQueueLoadSerial && request.queue === playQueue
+    && request.playbackToken === (typeof trackSwitchToken === 'undefined' ? 0 : trackSwitchToken);
+}
+function adoptQueueLoadRequest(request) {
+  request.queue = playQueue;
+  request.playbackToken = typeof trackSwitchToken === 'undefined' ? 0 : trackSwitchToken;
+}
 var podcastListEl = document.getElementById('podcast-list');
 if (podcastListEl) {
   podcastListEl.addEventListener('click', function (e) {
@@ -36,9 +49,11 @@ function renderMyPodcastRadioItems(key, title, items) {
 }
 async function openMyPodcastCollection(key, title) {
   if (!key) return;
+  var request = beginQueueLoadRequest();
   showLoading();
   try {
     var r = await apiJson('/api/podcast/my/items?key=' + encodeURIComponent(key) + '&limit=' + PLAYLIST_LAZY_BATCH_SIZE);
+    if (!queueLoadRequestCurrent(request)) return;
     if (r && r.loggedIn === false) { showLoginModal(); return; }
     var items = r.items || [];
     myPodcastItems[key] = items;
@@ -49,43 +64,57 @@ async function openMyPodcastCollection(key, title) {
     }
     if (r.itemType === 'voice' || (items[0] && items[0].type === 'podcast')) {
       playQueue = items.map(cloneSong);
+      adoptQueueLoadRequest(request);
       currentIdx = 0;
       safeRenderQueuePanel('podcast-collection-voice');
       safeSwitchPlaylistTab('queue', 'podcast-collection-voice');
       safeShelfRebuild('podcast-collection-voice', true);
       forcePlaybackControlsInteractive();
-      await playQueueAt(0);
+      var playback = playQueueAt(0);
+      adoptQueueLoadRequest(request);
+      await playback;
+      if (!queueLoadRequestCurrent(request)) return;
       showToast('载入: ' + (title || '喜欢的声音'));
       return;
     }
     renderMyPodcastRadioItems(key, title, items);
   } catch (e) {
+    if (!queueLoadRequestCurrent(request)) return;
     console.warn(e);
     showToast('播客加载失败');
   } finally {
-    hideLoading();
+    if (queueLoadRequestCurrent(request)) hideLoading();
   }
 }
 async function loadPodcastRadioIntoQueue(id, autoplay, title) {
   if (!id) return;
+  var request = beginQueueLoadRequest();
   showLoading();
   try {
     var r = await apiJson('/api/podcast/programs?id=' + encodeURIComponent(id) + '&limit=' + PLAYLIST_LAZY_BATCH_SIZE);
+    if (!queueLoadRequestCurrent(request)) return;
     if (r.error) { showToast('播客加载失败: ' + r.error); return; }
     if (!r.programs || !r.programs.length) { showToast('播客暂无可播放节目'); return; }
     playQueue = r.programs.map(cloneSong);
+    adoptQueueLoadRequest(request);
     currentIdx = 0;
     safeRenderQueuePanel('podcast-radio');
     safeSwitchPlaylistTab('queue', 'podcast-radio');
     safeShelfRebuild('podcast-radio', true);
     forcePlaybackControlsInteractive();
-    if (autoplay) await playQueueAt(0);
+    if (autoplay) {
+      var playback = playQueueAt(0);
+      adoptQueueLoadRequest(request);
+      await playback;
+      if (!queueLoadRequestCurrent(request)) return;
+    }
     showToast('载入: ' + (title || '播客'));
   } catch (e) {
+    if (!queueLoadRequestCurrent(request)) return;
     console.warn(e);
     showToast('播客加载失败');
   } finally {
-    hideLoading();
+    if (queueLoadRequestCurrent(request)) hideLoading();
   }
 }
 function playlistQueueSource(id) {
@@ -108,6 +137,7 @@ function playlistQueuePageUrl(source, offset, limit) {
   return playlistTracksEndpoint(source.provider, source.id, { offset: Math.max(0, offset || 0), limit: Math.max(1, limit || PLAYLIST_QUEUE_INITIAL_BATCH_SIZE) });
 }
 function cancelPlaylistQueueHydration(reason) {
+  playlistQueueLoadSerial += 1;
   var previous = queueHydrationState;
   if (previous && previous.timer) clearTimeout(previous.timer);
   if (previous) {
@@ -210,13 +240,14 @@ function requestPlaylistQueueHydrationForBrowse() {
 async function loadPlaylistIntoQueueById(id, autoplay, title, opts) {
   if (!id) return false;
   opts = opts || {};
+  var request = beginQueueLoadRequest();
+  var loadingVisible = true;
   if (!opts.preserveHomeState) {
     homeForcedOpen = false;
     homeSuppressed = false;
     updateEmptyHomeVisibility();
   }
   showLoading();
-  cancelPlaylistQueueHydration('new-playlist');
   var source = playlistQueueSource(id);
   var token = (queueHydrationState && queueHydrationState.token || 0) + 1;
   var r = null;
@@ -224,6 +255,7 @@ async function loadPlaylistIntoQueueById(id, autoplay, title, opts) {
   try {
     if (!seedTracks.length) {
       r = await fetchPlaylistTracksPage(source.provider, source.id, { offset: 0, limit: playlistQueuePageSize(source.provider, true) }, { timeoutMs: 16000 });
+      if (!queueLoadRequestCurrent(request)) return false;
       seedTracks = (r && r.tracks || []).map(cloneSong);
     } else {
       r = {
@@ -235,6 +267,7 @@ async function loadPlaylistIntoQueueById(id, autoplay, title, opts) {
       };
     }
   } catch (e) {
+    if (!queueLoadRequestCurrent(request)) return false;
     console.warn('[PlaylistLoadFirstPage]', id, e);
     showToast('歌单首批加载失败');
     hideLoading();
@@ -246,6 +279,7 @@ async function loadPlaylistIntoQueueById(id, autoplay, title, opts) {
       return false;
     }
     playQueue = seedTracks;
+    adoptQueueLoadRequest(request);
     var catalogPlaylist = userPlaylists.find(function (pl) {
       return normalizePlaylistProvider(pl && pl.provider) === source.provider && String(pl && pl.id || '') === String(source.id || '');
     });
@@ -282,10 +316,15 @@ async function loadPlaylistIntoQueueById(id, autoplay, title, opts) {
     safeShelfRebuild('playlist-load-first-page', true);
     forcePlaybackControlsInteractive();
     hideLoading();
+    loadingVisible = false;
     if (autoplay) {
       try {
-        await playQueueAt(currentIdx, { preserveHomeState: !!opts.preserveHomeState });
+        var playback = playQueueAt(currentIdx, { preserveHomeState: !!opts.preserveHomeState });
+        adoptQueueLoadRequest(request);
+        await playback;
+        if (!queueLoadRequestCurrent(request)) return false;
       } catch (playErr) {
+        if (!queueLoadRequestCurrent(request)) return false;
         console.warn('[PlaylistAutoplay]', id, playErr);
         showToast('歌单已载入，播放启动失败');
       }
@@ -302,12 +341,13 @@ async function loadPlaylistIntoQueueById(id, autoplay, title, opts) {
     }
     return true;
   } catch (e) {
+    if (!queueLoadRequestCurrent(request)) return false;
     console.warn('[PlaylistLoadState]', id, e);
     forcePlaybackControlsInteractive();
     showToast('歌单已载入，界面刷新失败');
     return false;
   } finally {
-    hideLoading();
+    if (loadingVisible && queueLoadRequestCurrent(request)) hideLoading();
   }
 }
 

@@ -1766,6 +1766,15 @@ const qqVipInfoCache = new Map();
 function requestText(targetUrl, opts, body) {
   opts = opts || {};
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(value);
+    };
     const u = new URL(targetUrl);
     const lib = u.protocol === 'https:' ? https : http;
     const req = lib.request(u, {
@@ -1773,21 +1782,32 @@ function requestText(targetUrl, opts, body) {
       headers: opts.headers || {},
     }, response => {
       const chunks = [];
+      let ended = false;
+      response.on('error', error => finish(error));
+      response.on('aborted', () => finish(Object.assign(new Error('Upstream response aborted'), { code: 'ECONNRESET' })));
+      response.on('close', () => {
+        if (!ended) finish(Object.assign(new Error('Upstream response closed before completion'), { code: 'ECONNRESET' }));
+      });
       response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => {
+        ended = true;
         const text = Buffer.concat(chunks).toString('utf8');
         if (response.statusCode >= 400) {
           const err = new Error('HTTP ' + response.statusCode);
           err.statusCode = response.statusCode;
           err.body = text;
-          reject(err);
+          finish(err);
           return;
         }
-        resolve(text);
+        finish(null, text);
       });
     });
-    req.setTimeout(opts.timeoutMs || 10000, () => req.destroy(new Error('Request timeout')));
-    req.on('error', reject);
+    timer = setTimeout(() => {
+      const error = Object.assign(new Error('Request timeout'), { code: 'ETIMEDOUT' });
+      finish(error);
+      req.destroy(error);
+    }, opts.timeoutMs || 10000);
+    req.on('error', error => finish(error));
     if (body) req.write(body);
     req.end();
   });
@@ -2888,11 +2908,12 @@ function sendAudioBuffer(res, buffer, contentType, range) {
   const total = buffer.length;
   const match = /^bytes=(\d*)-(\d*)$/i.exec(String(range || ''));
   if (match) {
-    let start = match[1] ? Number(match[1]) : 0;
-    let end = match[2] ? Number(match[2]) : total - 1;
-    if (!Number.isFinite(start) || start < 0) start = 0;
-    if (!Number.isFinite(end) || end >= total) end = total - 1;
-    if (start > end || start >= total) {
+    const suffix = !match[1];
+    const amount = Number(match[2]);
+    let start = suffix ? Math.max(0, total - amount) : Number(match[1]);
+    let end = suffix || !match[2] ? total - 1 : Math.min(Number(match[2]), total - 1);
+    if ((suffix && (!match[2] || !Number.isSafeInteger(amount) || amount <= 0)) ||
+        !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= total) {
       res.writeHead(416, { 'Content-Range': 'bytes */' + total });
       res.end();
       return;

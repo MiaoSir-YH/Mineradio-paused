@@ -176,7 +176,9 @@ function makeShelfManager() {
         ctx.save(); makeRoundRect(ctx, cx, cy, coverSize, coverSize, 26); ctx.clip();
         ctx.drawImage(rec.img, cx, cy, coverSize, coverSize); ctx.restore();
       } else if (!rec || (!rec.loading && !rec.failed)) {
-        requestPlaylistCover(item.cover, function () { drawCard(card, item); });
+        requestPlaylistCover(item.cover, function () {
+          if (card.mesh.parent && card.item) drawCard(card, card.item);
+        });
       }
     }
 
