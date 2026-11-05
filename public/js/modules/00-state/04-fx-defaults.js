@@ -33,6 +33,7 @@ var fxDefaults = {
   lyricMotionStyle: 'float',
   lyricCustomLineCount: 10,
   lyricGlitchCameraBind: true,
+  lyricSkyline: false,
   lyricGlitchIntensity: 1.0,
   lyricGlitchSlice: 0.72,
   lyricGlitchChroma: 0.86,
