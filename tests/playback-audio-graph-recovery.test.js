@@ -128,6 +128,7 @@ function makeHarness(options = {}) {
     onended: initialEndedHandler,
     onloadedmetadata: initialMetadataHandler,
     __mineradioQueueItemKey: 'queue-alpha',
+    __mineradioTrackSwitchToken: 7,
   });
   const mediaElementBindings = new WeakSet();
   const audioContext = {
@@ -284,6 +285,7 @@ function testCaptureTrackSwitchCreatesFreshAudioLifetime() {
   assert.strictEqual(originalAudio.onended, oldEndedHandler);
   assert.strictEqual(originalAudio.onloadedmetadata, oldMetadataHandler);
   assert.equal(freshAudio.__mineradioQueueItemKey, 'queue-alpha', 'fresh Audio lost queue identity');
+  assert.equal(freshAudio.__mineradioTrackSwitchToken, 7, 'fresh Audio lost playback event ownership');
   assert.equal(freshAudio.src, '', 'fresh Audio inherited the old track URL');
   assert.equal(freshAudio.currentSrc, '', 'fresh Audio inherited the old currentSrc');
   assert.equal(freshAudio.onended, null, 'fresh Audio inherited the old ended handler');

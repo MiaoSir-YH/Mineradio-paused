@@ -13,6 +13,7 @@ function pauseCurrentAudioForTrackSwitch() {
 }
 
 function syncPlaybackStateFromAudioEvent(reason) {
+  if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession(reason);
   if (typeof updatePlaybackResumePauseMarker === 'function') updatePlaybackResumePauseMarker(reason);
   var isPlaying = !!(audio && audio.src && !audio.paused && !audio.ended);
   playing = isPlaying;

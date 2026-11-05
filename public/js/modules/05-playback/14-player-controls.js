@@ -325,7 +325,7 @@ function schedulePlaybackStallRecovery(reason, opts) {
 }
 
 function playbackAttemptStillCurrent(media, token) {
-  return !!(media && audio === media && token === trackSwitchToken);
+  return !!(media && audio === media && token === trackSwitchToken && media.__mineradioUserPauseToken !== token);
 }
 var AUDIO_PLAY_REQUEST_TIMEOUT_MS = 9000;
 function awaitMediaPlayWithTimeout(media, playPromise, token, timeoutMs) {
@@ -534,18 +534,28 @@ async function attemptAudioPlay(opts) {
 }
 async function playAudio(opts) {
   opts = opts || {};
-  return attemptAudioPlay({ manual: !!opts.manual, silent: !!opts.silent || !!opts.startupAutoplay || !!opts.trackSwitch, startupAutoplay: !!opts.startupAutoplay, fade: opts.fade, preserveGain: !!opts.preserveGain, trackSwitch: !!opts.trackSwitch, resumeRecovery: !!opts.resumeRecovery, expectedMedia: opts.expectedMedia || audio, expectedToken: opts.expectedToken == null ? trackSwitchToken : opts.expectedToken });
+  var expectedMedia = opts.expectedMedia || audio;
+  var expectedToken = opts.expectedToken == null ? trackSwitchToken : opts.expectedToken;
+  var started = await attemptAudioPlay({ manual: !!opts.manual, silent: !!opts.silent || !!opts.startupAutoplay || !!opts.trackSwitch, startupAutoplay: !!opts.startupAutoplay, fade: opts.fade, preserveGain: !!opts.preserveGain, trackSwitch: !!opts.trackSwitch, resumeRecovery: !!opts.resumeRecovery, expectedMedia: expectedMedia, expectedToken: expectedToken });
+  // A deliberate pause while startup is pending is a loaded, paused track,
+  // not a media failure that should trigger provider fallback or skip a song.
+  return started || !!(expectedMedia && audio === expectedMedia && expectedToken === trackSwitchToken && expectedMedia.__mineradioUserPauseToken === expectedToken);
 }
-async function togglePlay() {
-  if (playToggleBusy) return;
+async function togglePlay(wantedPlaying) {
+  if (wantedPlaying === false && audio) audio.__mineradioUserPauseToken = trackSwitchToken;
+  if (wantedPlaying === true && audio) audio.__mineradioUserPauseToken = null;
+  if (playToggleBusy && wantedPlaying !== false) return;
   playToggleBusy = true;
   try {
     forcePlaybackControlsInteractive();
-    if ((!audio || !audio.src) && playQueue.length && currentIdx >= 0) {
+    // Explicit system commands must never turn a pause into starting a track.
+    if (wantedPlaying === false && (!audio || audio.paused || audio.ended)) return;
+    if (wantedPlaying === true && audio && audio.src && !audio.paused && !audio.ended && (!playQueue.length || playbackMediaMatchesCurrentQueueItem(audio))) return;
+    if (wantedPlaying !== false && (!audio || !audio.src) && playQueue.length && currentIdx >= 0) {
       await playQueueAt(currentIdx, { manual: true });
       return;
     }
-    if (audio && audio.src && playQueue.length && currentIdx >= 0 && !playbackMediaMatchesCurrentQueueItem(audio)) {
+    if (wantedPlaying !== false && audio && audio.src && playQueue.length && currentIdx >= 0 && !playbackMediaMatchesCurrentQueueItem(audio)) {
       await playQueueAt(currentIdx, { manual: true, suppressPlayFailureNotice: true });
       return;
     }
@@ -555,8 +565,12 @@ async function togglePlay() {
     }
     if (!audio) return;
     if (audio.paused || audio.ended) {
+      audio.__mineradioUserPauseToken = null;
       await attemptAudioPlay({ manual: true });
     } else {
+      audio.__mineradioUserPauseToken = trackSwitchToken;
+      var pauseMedia = audio;
+      var pauseToken = trackSwitchToken;
       if (typeof cuefieldAutoMixExecuting !== 'undefined' && cuefieldAutoMixExecuting && typeof resetCuefieldAutoMix === 'function') {
         resetCuefieldAutoMix('manual-pause');
       }
@@ -567,7 +581,15 @@ async function togglePlay() {
         && (albumGaplessState.preload.mixPending || albumGaplessState.preload.mixStarted)
         && typeof clearAlbumGaplessPreload === 'function'
       ) clearAlbumGaplessPreload('manual-pause');
-      await fadeOutAndPauseAudio();
+      if (wantedPlaying === false) {
+        audioFadeSerial++;
+        clearAudioFadeTimers();
+        audio.pause();
+        setAudioOutputGainImmediate(0);
+      } else {
+        var didPause = await fadeOutAndPauseAudio();
+        if (audio !== pauseMedia || trackSwitchToken !== pauseToken || (!didPause && !pauseMedia.paused)) return;
+      }
       playing = false;
       setPlayIcon(false);
       hideLoading();
@@ -631,7 +653,14 @@ function nextTrack(userInitiated) {
   forcePlaybackControlsInteractive();
   if (currentIdx >= playQueue.length - 1 && queueHydrationState && queueHydrationState.queueRef === playQueue && (queueHydrationState.active || queueHydrationState.loading) && !queueHydrationState.error) {
     var previousTail = currentIdx;
+    var tailQueue = playQueue;
+    var tailHydration = queueHydrationState;
+    var tailToken = trackSwitchToken;
+    function tailStillCurrent() {
+      return playQueue === tailQueue && queueHydrationState === tailHydration && currentIdx === previousTail && trackSwitchToken === tailToken;
+    }
     Promise.resolve(hydratePlaylistQueueNextPage('queue-tail')).then(function () {
+      if (!tailStillCurrent()) return false;
       if (playQueue.length <= previousTail + 1 && queueHydrationState && queueHydrationState.error) {
         showToast('后续歌曲载入失败，当前歌曲保持不变');
         return false;
@@ -640,6 +669,8 @@ function nextTrack(userInitiated) {
       var tailOpts = userInitiated ? { manual: true, suppressPlayFailureNotice: true } : { suppressPlayFailureNotice: true };
       if (playMode === 'shuffle') tailOpts.skipShuffleOrder = true;
       return playQueueAt(currentIdx, tailOpts);
+    }).catch(function (error) {
+      if (tailStillCurrent()) { console.warn('[QueueTail]', error); showToast('后续歌曲载入失败，当前歌曲保持不变'); }
     }).finally(forcePlaybackControlsInteractive);
     return;
   }

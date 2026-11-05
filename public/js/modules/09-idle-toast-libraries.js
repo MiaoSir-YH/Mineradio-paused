@@ -787,14 +787,28 @@ function handleVisualGuideSurfaceClick(e) {
 // ============================================================
 //  动态库加载
 // ============================================================
+var dynamicScriptLoads = Object.create(null);
 function loadScriptOnce(src) {
-  return new Promise(function (resolve, reject) {
+  if (dynamicScriptLoads[src]) return dynamicScriptLoads[src];
+  var promise = new Promise(function (resolve, reject) {
     var hit = document.querySelector('script[src="' + src + '"]');
-    if (hit) { resolve(); return; }
-    var sc = document.createElement('script'); sc.src = src; sc.async = true;
-    sc.onload = resolve; sc.onerror = reject;
-    document.head.appendChild(sc);
+    if (hit && (hit.__mineradioLoaded || /loaded|complete/.test(hit.readyState || ''))) { resolve(); return; }
+    var sc = hit || document.createElement('script');
+    sc.onload = function () { sc.__mineradioLoaded = true; resolve(); };
+    sc.onerror = function () {
+      sc.remove();
+      reject(new Error('Script load failed: ' + src));
+    };
+    if (!hit) {
+      sc.src = src; sc.async = true;
+      document.head.appendChild(sc);
+    }
+  }).catch(function (error) {
+    if (dynamicScriptLoads[src] === promise) delete dynamicScriptLoads[src];
+    throw error;
   });
+  dynamicScriptLoads[src] = promise;
+  return promise;
 }
 
 // ============================================================

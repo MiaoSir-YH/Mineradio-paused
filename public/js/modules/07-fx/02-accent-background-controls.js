@@ -1,3 +1,5 @@
+var customBgObjectMediaId = '';
+
 function applyHomeAccentColor() {
   var color = normalizeHexColor(fx.homeAccentColor || '#00f5d4');
   var rgb = hexToRgb(color);
@@ -171,6 +173,7 @@ function applyCustomBackground() {
     video.removeAttribute('src');
     video.load();
     if (customBgObjectUrl) { URL.revokeObjectURL(customBgObjectUrl); customBgObjectUrl = ''; }
+    customBgObjectMediaId = '';
     return;
   }
   var wallpaperEngineActive = document.body.classList.contains('wallpaper-engine-active');
@@ -184,7 +187,7 @@ function applyCustomBackground() {
       video.pause();
       return;
     }
-    if (customBgObjectUrl && customBgObjectUrl !== src) { URL.revokeObjectURL(customBgObjectUrl); customBgObjectUrl = ''; }
+    if (customBgObjectUrl && customBgObjectUrl !== src) { URL.revokeObjectURL(customBgObjectUrl); customBgObjectUrl = ''; customBgObjectMediaId = ''; }
     if (video.getAttribute('src') !== src) {
       video.setAttribute('src', src);
       video.load();
@@ -198,10 +201,15 @@ function applyCustomBackground() {
   if (media.src) {
     setVideoSrc(media.src);
   } else if (media.id) {
+    if (customBgObjectMediaId === media.id && customBgObjectUrl) {
+      setVideoSrc(customBgObjectUrl);
+      return;
+    }
     getCustomBackgroundBlob(media.id).then(function (blob) {
       if (token !== customBgApplyToken || !blob) return;
       if (customBgObjectUrl) URL.revokeObjectURL(customBgObjectUrl);
       customBgObjectUrl = URL.createObjectURL(blob);
+      customBgObjectMediaId = media.id;
       setVideoSrc(customBgObjectUrl);
     }).catch(function (err) { console.warn('background video load failed:', err); });
   }
@@ -381,8 +389,9 @@ function bindCustomBackgroundCropModal() {
     customBackgroundCropModalState.lastX = e.clientX;
     customBackgroundCropModalState.lastY = e.clientY;
     var zoomFactor = Math.max(1, Number(fx.backgroundMediaZoom) || 1);
-    var nextX = (Number(fx.backgroundMediaCropX) || 50) - (dx / Math.max(1, rect.width)) * 100 / zoomFactor;
-    var nextY = (Number(fx.backgroundMediaCropY) || 50) - (dy / Math.max(1, rect.height)) * 100 / zoomFactor;
+    var crop = customBackgroundCropSnapshot();
+    var nextX = crop.x - (dx / Math.max(1, rect.width)) * 100 / zoomFactor;
+    var nextY = crop.y - (dy / Math.max(1, rect.height)) * 100 / zoomFactor;
     applyCustomBackgroundCropSnapshot({ x: nextX, y: nextY, zoom: zoomFactor });
   });
   function stopDrag() {

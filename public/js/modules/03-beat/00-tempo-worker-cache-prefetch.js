@@ -379,6 +379,11 @@ function normalizeBeatPrefetchState(state) {
 
 async function fetchBeatPrefetchAudioUrl(song) {
   if (!song) return null;
+  if (typeof shouldResolvePlaybackProviderOrder === 'function' && shouldResolvePlaybackProviderOrder(song, {})) {
+    var selection = await resolvePlaybackByProviderOrder(song);
+    if (!selection || !selection.data || !selection.data.url || selection.data.trial) return null;
+    return '/api/audio?url=' + encodeURIComponent(selection.data.url);
+  }
   if (typeof resolveAlbumGaplessPlaybackData === 'function') {
     var resolved = await resolveAlbumGaplessPlaybackData(song);
     if (!resolved || !resolved.url || resolved.trial) return null;

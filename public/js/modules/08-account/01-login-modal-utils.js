@@ -146,10 +146,12 @@ function animateAccountProviderReorder(root, selector, beforeRects, movingClass)
   });
 }
 function saveAccountProviderOrder(order) {
+  var previousOrder = accountProviderOrder().join('|');
   var topRoot = document.getElementById('user-btn');
   var topRects = captureAccountProviderRects(topRoot, '.top-account-pill[data-account-provider]');
   order = normalizeAccountProviderList(order);
   try { localStorage.setItem(ACCOUNT_PROVIDER_ORDER_STORE_KEY, JSON.stringify(order)); } catch (e) { }
+  if (previousOrder !== order.join('|') && typeof invalidatePlaybackProviderOrder === 'function') invalidatePlaybackProviderOrder();
   syncAccountProviderOrderUi();
   if (typeof renderUserBtn === 'function') renderUserBtn();
   animateAccountProviderReorder(topRoot, '.top-account-pill[data-account-provider]', topRects, 'provider-reorder-moving');

@@ -89,6 +89,8 @@ function setLoginAuthDrawerOpen(open) {
   if (modal) modal.classList.toggle('login-details-open', !!open);
   if (drawer) drawer.classList.toggle('show', !!open);
   if (!open) {
+    loginRefreshRequestSeq += 1;
+    qrKey = null;
     loginWorkflowPendingProvider = '';
     try { stopQrPoll(); } catch (e) { }
   }
@@ -307,8 +309,8 @@ function updateLoginProviderCapsuleStatus(provider, btn) {
     btn.insertBefore(handle, btn.firstChild);
   }
   handle.setAttribute('data-login-provider-sort', provider);
-  handle.setAttribute('title', 'Drag to sort');
-  handle.setAttribute('aria-label', 'Drag to sort');
+  handle.setAttribute('title', '拖动调整播放音源顺序，从上到下依次尝试');
+  handle.setAttribute('aria-label', '拖动调整播放音源顺序');
   var logo = btn.querySelector('.provider-logo');
   if (logo) {
     if (st.loggedIn) {
@@ -593,6 +595,8 @@ function resumeLoginModalAfterGate() {
   scheduleLoginWorkflowEdges('open');
 }
 function closeLoginModal() {
+  loginRefreshRequestSeq += 1;
+  qrKey = null;
   stopQrPoll();
   setLoginAuthDrawerOpen(false);
   closeGsapModal(document.getElementById('login-modal'));

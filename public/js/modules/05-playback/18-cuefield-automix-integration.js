@@ -66,20 +66,33 @@ function updateCuefieldAutoMixUi(status) {
     : 'Cuefield AutoMix（实验功能，默认关闭）';
 }
 
-function cuefieldAutoMixAudioDescriptor(song) {
-  var key = cuefieldSongKey(song);
+async function cuefieldAutoMixAudioDescriptor(song) {
+  var orderKey = playbackProviderOrderKey();
+  var songKey = cuefieldSongKey(song);
+  var readinessKey = playbackProviderOrder().map(function (provider) { return sourceFallbackProviderReady(provider) ? '1' : '0'; }).join('');
+  var key = songKey ? songKey + '|' + orderKey + '|' + readinessKey : '';
   var cached = key && cuefieldAudioDescriptorCache[key];
-  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached);
-  return Promise.resolve(typeof fetchBeatPrefetchAudioUrl === 'function' ? fetchBeatPrefetchAudioUrl(song) : null).then(function (proxyUrl) {
-    if (!proxyUrl) return null;
-    var descriptor = {
-      proxyUrl: proxyUrl,
-      playbackData: { url: proxyUrl, source: songProviderKey(song), level: '' },
-      expiresAt: Date.now() + 4 * 60 * 1000
-    };
-    if (key) cuefieldAudioDescriptorCache[key] = descriptor;
-    return descriptor;
-  });
+  if (cached && cached.expiresAt > Date.now()) return cached;
+  var token = trackSwitchToken;
+  var useProviderOrder = shouldResolvePlaybackProviderOrder(song, {});
+  var resolution = useProviderOrder
+    ? await resolvePlaybackByProviderOrder(song, { isCurrent: function () { return token === trackSwitchToken; } })
+    : null;
+  if (token !== trackSwitchToken || orderKey !== playbackProviderOrderKey()) return null;
+  var proxyUrl = resolution && resolution.data && resolution.data.url && !resolution.data.trial
+    ? '/api/audio?url=' + encodeURIComponent(resolution.data.url)
+    : (!useProviderOrder && typeof fetchBeatPrefetchAudioUrl === 'function' ? await fetchBeatPrefetchAudioUrl(song) : null);
+  if (!proxyUrl || token !== trackSwitchToken || orderKey !== playbackProviderOrderKey()) return null;
+  var descriptor = {
+    proxyUrl: proxyUrl,
+    song: resolution ? resolution.song : song,
+    playbackData: resolution ? resolution.data : { url: proxyUrl, source: songProviderKey(song), level: '' },
+    providerOrderAttempted: resolution ? resolution.attempted : [],
+    providerOrderKey: orderKey,
+    expiresAt: Date.now() + 4 * 60 * 1000
+  };
+  if (key) cuefieldAudioDescriptorCache[key] = descriptor;
+  return descriptor;
 }
 
 function cuefieldLinesToLrc(lines) {
@@ -1068,6 +1081,9 @@ async function executeCuefieldAutoMix(pending) {
       preloadedAudio: nextMedia,
       preloadedData: descriptor && descriptor.playbackData || { url: descriptor && descriptor.proxyUrl || '' },
       preloadedProxyAudioUrl: descriptor && descriptor.proxyUrl || '',
+      preloadedSong: descriptor && descriptor.song,
+      providerOrderAttempted: descriptor && descriptor.providerOrderAttempted,
+      providerOrderKey: descriptor && descriptor.providerOrderKey,
       cuefieldAutoMix: true,
       fade: false
     });

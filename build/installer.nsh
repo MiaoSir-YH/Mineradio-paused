@@ -388,6 +388,11 @@ FunctionEnd
 
 Function MineradioNormalizeInstallDir
   Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
   Push "$0"
   Call MineradioTrimInstallDir
   Pop $0
@@ -415,11 +420,18 @@ Function MineradioNormalizeInstallDir
   ${AndIf} $2 != "\${MINERADIO_INSTALL_DIR_NAME_LOWER}"
     StrCpy $0 "$0\${MINERADIO_INSTALL_DIR_NAME}"
   ${EndIf}
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
   Exch $0
 FunctionEnd
 
 Function MineradioTrimInstallDir
   Exch $0
+  Push $1
+  Push $2
 
   trim:
     StrLen $1 "$0"
@@ -431,22 +443,29 @@ Function MineradioTrimInstallDir
       ${EndIf}
     ${EndIf}
 
+  Pop $2
+  Pop $1
   Exch $0
 FunctionEnd
 
 Function MineradioInstallDirLooksOwned
   Exch $0
+  Push $1
   StrCpy $1 "0"
 
   IfFileExists "$0\${MINERADIO_INSTALL_MARKER}" 0 +2
     StrCpy $1 "1"
 
   StrCpy $0 "$1"
+  Pop $1
   Exch $0
 FunctionEnd
 
 Function MineradioExistingInstallPathCanBeAdopted
   Exch $0
+  Push $1
+  Push $2
+  Push $3
   StrCpy $1 "0"
 
   ${If} $0 == ""
@@ -480,6 +499,9 @@ Function MineradioExistingInstallPathCanBeAdopted
 
   done:
     StrCpy $0 "$1"
+    Pop $3
+    Pop $2
+    Pop $1
     Exch $0
 FunctionEnd
 
@@ -537,6 +559,11 @@ FunctionEnd
 
 Function MineradioRegisteredInstallDirCanBeAdopted
   Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
   StrCpy $1 "0"
 
   ${If} $0 == ""
@@ -605,11 +632,19 @@ Function MineradioRegisteredInstallDirCanBeAdopted
 
   done:
     StrCpy $0 "$1"
-    Exch $0
+    Pop $5
+    Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
 FunctionEnd
 
 Function MineradioInstallDirIsEmpty
   Exch $0
+  Push $1
+  Push $2
+  Push $3
   FindFirst $1 $2 "$0\*.*"
   StrCpy $3 "1"
 
@@ -627,11 +662,18 @@ Function MineradioInstallDirIsEmpty
   done:
     FindClose $1
     StrCpy $0 "$3"
+    Pop $3
+    Pop $2
+    Pop $1
     Exch $0
 FunctionEnd
 
 Function MineradioOldInstallPathNeedsQuarantine
   Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
   StrCpy $1 "0"
 
   ${If} $0 == ""
@@ -662,7 +704,11 @@ Function MineradioOldInstallPathNeedsQuarantine
 
   done:
     StrCpy $0 "$1"
-    Exch $0
+    Pop $4
+    Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
 FunctionEnd
 
 Function MineradioDisableUnsafeOldUninstallers
@@ -726,7 +772,8 @@ Function MineradioDisableUnsafeOldUninstallers
 FunctionEnd
 
 Function MineradioDeleteLegacyUninstallerFileIfMissingMarker
-  Pop $0
+  Exch $0
+  Push $1
   ${If} $0 != ""
     Push "$0"
     Call MineradioTrimInstallDir
@@ -739,6 +786,8 @@ Function MineradioDeleteLegacyUninstallerFileIfMissingMarker
   ${EndIf}
 
   done:
+  Pop $1
+  Pop $0
 FunctionEnd
 
 Function MineradioValidateInstallDir
@@ -935,23 +984,32 @@ FunctionEnd
 !endif
 
 !ifdef BUILD_UNINSTALLER
+!include "${BUILD_RESOURCES_DIR}\uninstall-manifest.nsh"
+
 !macro customUnInit
   Call un.MineradioValidateUninstallDir
 !macroend
 
 Function un.MineradioInstallDirLooksOwned
   Exch $0
+  Push $1
   StrCpy $1 "0"
 
   IfFileExists "$0\${MINERADIO_INSTALL_MARKER}" 0 +2
     StrCpy $1 "1"
 
   StrCpy $0 "$1"
+  Pop $1
   Exch $0
 FunctionEnd
 
 Function un.MineradioNormalizeInstallDir
   Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
   Push "$0"
   Call un.MineradioTrimInstallDir
   Pop $0
@@ -979,11 +1037,18 @@ Function un.MineradioNormalizeInstallDir
   ${AndIf} $2 != "\${MINERADIO_INSTALL_DIR_NAME_LOWER}"
     StrCpy $0 "$0\${MINERADIO_INSTALL_DIR_NAME}"
   ${EndIf}
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
   Exch $0
 FunctionEnd
 
 Function un.MineradioTrimInstallDir
   Exch $0
+  Push $1
+  Push $2
 
   trim:
     StrLen $1 "$0"
@@ -995,6 +1060,8 @@ Function un.MineradioTrimInstallDir
       ${EndIf}
     ${EndIf}
 
+  Pop $2
+  Pop $1
   Exch $0
 FunctionEnd
 
@@ -1024,6 +1091,7 @@ FunctionEnd
 
 Function un.MineradioRemoveInstalledFiles
   SetOutPath $TEMP
+  Call un.MineradioRemoveManifestFiles
 
   Delete "$INSTDIR\${PRODUCT_FILENAME}.exe"
   Delete "$INSTDIR\Uninstall ${PRODUCT_FILENAME}.exe"

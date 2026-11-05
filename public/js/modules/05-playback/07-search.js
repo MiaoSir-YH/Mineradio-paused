@@ -509,7 +509,16 @@ function closeControlSourceSwitcher() {
   controlSourceSwitcherState.open = false;
   controlSourceSwitcherState.loading = false;
   controlSourceSwitcherState.anchor = null;
+  controlSourceSwitcherState.requestId++;
+  controlSourceSwitcherState.matches = {};
+  controlSourceSwitcherState.queue = null;
+  controlSourceSwitcherState.songKey = '';
   if (el) el.classList.remove('show', 'loading');
+}
+function controlSourceSelectionCurrent() {
+  var state = controlSourceSwitcherState;
+  return state.open && state.queue === playQueue && state.index === currentIdx
+    && state.trackToken === trackSwitchToken && state.songKey === queueItemKey(currentControlSong());
 }
 function controlSourceMatchSong(entry) {
   if (!entry) return null;
@@ -592,7 +601,7 @@ async function loadControlSourceMatches(song, requestId) {
       matches[provider.key] = { song: null, issue: 'no_source' };
     }
   }));
-  if (requestId !== controlSourceSwitcherState.requestId || !controlSourceSwitcherState.open) return;
+  if (requestId !== controlSourceSwitcherState.requestId || !controlSourceSelectionCurrent()) return;
   controlSourceSwitcherState.loading = false;
   renderControlSourceSwitcher(matches);
   controlSourceSwitcherState.matches = matches;
@@ -618,6 +627,10 @@ function toggleControlSourceSwitcher(e) {
   controlSourceSwitcherState.anchor = anchor;
   controlSourceSwitcherState.requestId++;
   controlSourceSwitcherState.matches = {};
+  controlSourceSwitcherState.queue = playQueue;
+  controlSourceSwitcherState.index = currentIdx;
+  controlSourceSwitcherState.songKey = queueItemKey(song);
+  controlSourceSwitcherState.trackToken = trackSwitchToken;
   renderControlSourceSwitcher({ [songProviderKey(song)]: { song: song, issue: '' } });
   controlSourcePositionSwitcher(anchor);
   el.classList.add('show');
@@ -626,7 +639,11 @@ function toggleControlSourceSwitcher(e) {
 async function switchCurrentSongSource(provider) {
   provider = normalizePlaybackProvider(provider);
   var song = currentControlSong();
-  if (!song) return;
+  if (!song || !controlSourceSelectionCurrent()) { closeControlSourceSwitcher(); return; }
+  var sourceQueue = playQueue;
+  var sourceIndex = currentIdx;
+  var committedSong = null;
+  var switchToken = null;
   var currentProvider = songProviderKey(song);
   var previousSong = cloneSong(song);
   if (provider === currentProvider) {
@@ -642,11 +659,12 @@ async function switchCurrentSongSource(provider) {
     var issue = controlSourceMatchIssue(entry);
     if (!match) {
       var lookup = await findControlSourceMatchResult(song, provider);
+      if (requestId !== controlSourceSwitcherState.requestId || !controlSourceSelectionCurrent()) return;
       match = lookup && lookup.song ? lookup.song : null;
       issue = lookup && lookup.issue ? lookup.issue : issue;
       if (controlSourceSwitcherState.matches) controlSourceSwitcherState.matches[provider] = lookup || { song: null, issue: issue || 'no_source' };
     }
-    if (requestId !== controlSourceSwitcherState.requestId) return;
+    if (requestId !== controlSourceSwitcherState.requestId || !controlSourceSelectionCurrent()) return;
     if (!match) {
       showSourceFallbackNotice('未找到可切换音源', controlSourceProviderTitle(provider) + ' 暂时没有匹配到同名同歌手版本。');
       showSourceFallbackNotice('该平台无正版音源', controlSourceProviderTitle(provider) + ': ' + controlSourceIssueLabel(issue));
@@ -656,27 +674,33 @@ async function switchCurrentSongSource(provider) {
     }
     match.manualSourceSwitchFrom = currentProvider;
     match.manualSourceSwitchAt = Date.now();
-    playQueue[currentIdx] = hydrateCustomCover(match);
+    committedSong = hydrateCustomCover(match);
+    sourceQueue[sourceIndex] = committedSong;
+    switchToken = trackSwitchToken;
     closeControlSourceSwitcher();
     safeRenderQueuePanel('manual-source-switch', { scrollCurrent: miniQueueOpen });
     updateControlTrackInfo(playQueue[currentIdx]);
     showSourceFallbackNotice('正在切换音源', (song.name || '当前歌曲') + ' -> ' + controlSourceProviderTitle(provider));
-    await playQueueAt(currentIdx, {
+    var playback = playQueueAt(sourceIndex, {
       manual: true,
       resumeAt: currentResumeSeconds(0),
       preserveHomeState: true,
       sourceSwitch: true
     });
+    switchToken = trackSwitchToken;
+    await playback;
   } catch (err) {
+    var ownsCommit = committedSong && playQueue === sourceQueue && currentIdx === sourceIndex && playQueue[sourceIndex] === committedSong && trackSwitchToken === switchToken;
+    if (!ownsCommit && (committedSong || requestId !== controlSourceSwitcherState.requestId || !controlSourceSelectionCurrent())) return;
     console.warn('[SourceSwitch]', provider, err);
-    if (currentIdx >= 0 && currentIdx < playQueue.length) {
-      playQueue[currentIdx] = hydrateCustomCover(previousSong);
+    if (ownsCommit) {
+      playQueue[sourceIndex] = hydrateCustomCover(previousSong);
       safeRenderQueuePanel('manual-source-switch-restore', { scrollCurrent: miniQueueOpen });
       updateControlTrackInfo(playQueue[currentIdx]);
     }
     showSourceFallbackNotice('音源切换失败', '已保留当前播放队列，请稍后再试。');
   } finally {
-    controlSourceSwitcherState.loading = false;
+    if (requestId === controlSourceSwitcherState.requestId) controlSourceSwitcherState.loading = false;
     forcePlaybackControlsInteractive();
   }
 }

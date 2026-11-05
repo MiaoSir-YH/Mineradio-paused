@@ -687,6 +687,7 @@ function setCustomCoverForCurrent(dataUrl, opts) {
   showToast(song ? (!hasKey ? '封面已应用' : (saved ? '封面已保存' : '封面已应用，存储空间不足')) : '已应用临时封面');
 }
 function updateCustomCoverButton() {
+  if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession('custom-cover');
   var btn = document.getElementById('clear-cover-btn');
   var hasCover = !!getCustomCoverForSong(currentCoverSong());
   var area = document.getElementById('search-area');

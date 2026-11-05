@@ -1,0 +1,142 @@
+name: Build Windows release
+
+on:
+  push:
+    branches: [release/2.2.2]
+    paths: [.github/workflows/release-windows.yml]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        default: v2.2.2
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.tag || 'v2.2.2' }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid release tag' }
+          $draft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft
+          if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw 'An existing draft release is required' }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run all repository regressions
+        shell: pwsh
+        run: |
+          node --test --test-reporter=tap tests/*.test.js 2>&1 | Tee-Object -FilePath regression-tests.tap
+          if ($LASTEXITCODE -ne 0) { throw 'Repository regression tests failed' }
+
+      - name: Verify native Electron media session
+        shell: pwsh
+        run: |
+          node tests/system-media-session-electron-smoke.js 2>&1 | Tee-Object -FilePath native-media-smoke.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native Electron media session smoke failed' }
+
+      - name: Build complete Windows x64 installer
+        run: npm run build:win -- --x64 --publish never
+
+      - name: Verify packaged version and native application startup
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:RELEASE_TAG) { throw 'Tag and package version differ' }
+          $packaged = Get-Content dist/win-unpacked/resources/app/package.json -Raw | ConvertFrom-Json
+          if ($packaged.version -ne $version) { throw 'Packaged version differs' }
+          $sourceFiles = @(
+            'public/js/modules/05-playback/11-provider-fallback.js',
+            'public/js/modules/05-playback/13-playback-start-audio.js',
+            'public/js/modules/05-playback/18-cuefield-automix-integration.js',
+            'public/js/modules/05-playback/14a-system-media-session.js',
+            'public/js/modules/05-playback/14-player-controls.js',
+            'public/js/modules/05-playback/08-audio-graph-controls.js',
+            'public/js/modules/06-lyrics/03-podcast-playlist-loaders.js',
+            'desktop/main.js',
+            'server.js',
+            'qishui-api.js',
+            'build/install-manifest.js',
+            'build/uninstall-manifest.nsh'
+          )
+          foreach ($file in $sourceFiles) {
+            if ((Get-FileHash $file).Hash -ne (Get-FileHash "dist/win-unpacked/resources/app/$file").Hash) {
+              throw "Packaged source differs: $file"
+            }
+          }
+          $installRoot = (Resolve-Path dist/win-unpacked).Path
+          $manifest = Get-Content (Join-Path $installRoot '.mineradio-installed-files') -Encoding Unicode
+          if ($manifest[0] -ne 'appId=com.mineradio.desktop') { throw 'Install manifest appId differs' }
+          $installedFiles = @($manifest | Where-Object { $_.StartsWith('F|') } | ForEach-Object { $_.Substring(2) })
+          Get-ChildItem $installRoot -Recurse -File | ForEach-Object {
+            $relative = [IO.Path]::GetRelativePath($installRoot, $_.FullName)
+            if ($relative -ne '.mineradio-installed-files' -and $relative -notin $installedFiles) {
+              throw "Install manifest omits: $relative"
+            }
+          }
+          $env:MINERADIO_STARTUP_QA_USER_DATA = Join-Path $env:RUNNER_TEMP 'mineradio-release-startup'
+          $env:MINERADIO_STARTUP_QA_HIDDEN = '1'
+          $env:MINERADIO_STARTUP_QA_EXIT_MS = '1800'
+          $env:MINERADIO_NO_DESKTOP_SHORTCUT = '1'
+          $process = Start-Process -FilePath (Resolve-Path dist/win-unpacked/Mineradio.exe) -ArgumentList '--disable-gpu' -PassThru
+          if (!$process.WaitForExit(45000)) {
+            Stop-Process -Id $process.Id -Force
+            throw 'Application startup timed out'
+          }
+          $state = Get-Content (Join-Path $env:MINERADIO_STARTUP_QA_USER_DATA 'startup-state.json') -Raw | ConvertFrom-Json
+          if ($process.ExitCode -ne 0 -or $state.phase -ne 'ready') { throw 'Native Windows startup failed' }
+          $exe = "Mineradio-$version-Setup.exe"
+          $hash = (Get-FileHash "dist/$exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $exe" | Set-Content "dist/$exe.sha256" -Encoding ascii
+          $tap = Get-Content regression-tests.tap -Raw
+          $stats = @{}
+          foreach ($metric in @('tests', 'pass', 'fail', 'skipped')) {
+            if ($tap -notmatch "(?m)^# $metric (\d+)\s*$") { throw "Missing regression count: $metric" }
+            $stats[$metric] = [int]$Matches[1]
+          }
+          $smoke = Get-Content native-media-smoke.log -Raw
+          if ($smoke -notmatch 'MINERADIO_MEDIA_SMOKE:(\{[^\r\n]+\})') { throw 'Missing media session smoke result' }
+          $mediaSmoke = $Matches[1] | ConvertFrom-Json
+          if ($mediaSmoke.ok -ne $true) { throw 'Media session smoke result is not successful' }
+          @{
+            version = $version
+            artifact = $exe
+            architecture = 'Windows x64'
+            sha256 = $hash
+            bytes = (Get-Item "dist/$exe").Length
+            sourceCommit = (git rev-parse HEAD)
+            buildCommand = 'npm run build:win -- --x64 --publish never'
+            startupSmoke = @{ platform = 'Native Windows'; phase = $state.phase }
+            fullRegressions = @{ total = $stats.tests; passed = $stats.pass; failed = $stats.fail; skipped = $stats.skipped }
+            mediaSessionSmoke = @{ platform = 'Native Windows'; result = $mediaSmoke }
+            installManifest = @{ complete = $true; files = $installedFiles.Count }
+            workflowRun = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          } | ConvertTo-Json -Depth 5 | Set-Content "dist/Mineradio-$version-build-info.json" -Encoding utf8
+
+      - name: Upload verified installer to the draft release
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          gh release upload $env:RELEASE_TAG "dist/Mineradio-$version-Setup.exe" "dist/Mineradio-$version-Setup.exe.sha256" "dist/Mineradio-$version-build-info.json" "docs/RELEASE_NOTES_v$version.md"
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
