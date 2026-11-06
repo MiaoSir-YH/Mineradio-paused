@@ -31,6 +31,9 @@
       --lyric-drop-paused:rgba(156,255,223,.22);
     }
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;user-select:none}
+    #skyline{position:fixed;left:0;top:50%;width:100%;height:min(100vh,16.6vw);transform:translateY(-50%);pointer-events:none;display:none}
+    body.skyline #skyline{display:block}
+    body.skyline #fx,body.skyline .lyric-viewport{visibility:hidden}
     body{opacity:0;transition:opacity .22s ease;-webkit-app-region:no-drag}
     body.show{opacity:1}
     canvas{display:none}
@@ -185,12 +188,14 @@
 </head>
 <body>
   <canvas id="fx"></canvas>
+  <canvas id="skyline"></canvas>
   <div class="wrap">
     <div id="stage" class="stage">
       <div id="lyricViewport" class="lyric-viewport"><div id="lyricScroller" class="lyric-scroll"><div id="line" class="line" data-text="Mineradio">Mineradio</div></div></div>
       <div id="lockHint" class="lock-hint"><span class="lock-icon"></span><span id="lockText">&#20013;&#38190;&#35299;&#38145;</span><button id="closeLyricsBtn" class="lyrics-close" type="button" aria-label="Close desktop lyrics">&#20851;&#38381;&#26700;&#38754;&#27468;&#35789;</button></div>
     </div>
   </div>
+  <script src="js/skyline-lyrics.js"></script>
   <script>
     'use strict';
     var canvas = document.getElementById('fx');
@@ -392,11 +397,30 @@
         desktopBeat.bassDrive = 0;
       }
     }
+    // 天际屏：主窗口换歌时发来整首歌词（skylineLines），平时只带签名（skylineKey）。
+    var skyline = { inst: null, key: '', on: false };
+    function applySkylineState(next) {
+      var want = !!next.skyline && !!window.MineradioSkyline;
+      if (want && !skyline.inst) skyline.inst = MineradioSkyline.create(document.getElementById('skyline'), { opaque: false });
+      if (want) {
+        var key = String(next.skylineKey || '');
+        if (Array.isArray(next.skylineLines) && (key !== skyline.key || !skyline.inst.lines.length)) {
+          skyline.key = key;
+          skyline.inst.setLines(next.skylineLines);
+        } else if (key !== skyline.key) {
+          skyline.key = key;
+          skyline.inst.setLines([]); // 等主窗口发来新歌词
+        }
+      }
+      skyline.on = want && skyline.inst.lines.length > 0;
+      document.body.classList.toggle('skyline', skyline.on);
+    }
     function applyDesktopPlayback(payload) {
       if (!payload) return;
       state.playbackTime = Math.max(0, Number(payload.time) || 0);
       state.playbackDuration = Math.max(0, Number(payload.duration) || 0);
       state.playbackRate = clamp(Number(payload.rate) || 1, .25, 4, 1);
+      state.playbackLyricOffset = Number(payload.lyricOffset) || 0;
       state.playbackReceivedAt = performance.now();
     }
     function currentDesktopPlaybackTime(nowMs) {
@@ -742,6 +766,7 @@
       state.colors = Object.assign({}, state.colors, next.colors || {});
       applyCustomFontPayload(next.customFont);
       applyDesktopPlayback(next.playback);
+      applySkylineState(next);
       applyDesktopBeatMapPayload(next);
       var motion = Object.assign({}, next.motion || {});
       if (motion.lyricGlow != null) state.lyricGlow = !!motion.lyricGlow;
@@ -1033,6 +1058,7 @@
         var motion = updateMotion(now, offlineMotion);
         applyStageMotion(now);
         updateLyricScroll(nowMs, progress);
+        if (skyline.on) skyline.inst.render(currentDesktopPlaybackTime(nowMs) + (state.playbackLyricOffset || 0), state.playing ? dt : 0, MineradioSkyline.themeFromColors(state.colors), state.playbackRate);
       }
       scheduleNextDraw();
     }

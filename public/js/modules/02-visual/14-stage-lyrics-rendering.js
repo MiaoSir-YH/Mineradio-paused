@@ -3140,6 +3140,8 @@ function tickLyricsParticles() {
   if ((stageLyrics.currentIdx < 0 || !stageLyrics.current) && stageLyricWarmupPending()) {
     return;
   }
+  // 天际屏开着时 3D 歌词是隐藏的，跳过换句时的网格和贴图重建；这一步很重，会让换句卡顿。
+  if (typeof skylineLyricsActive === 'function' && skylineLyricsActive()) return;
   var displayPayload = null;
   if (newIdx === stageLyrics.currentIdx && stageLyrics.current && stageLyrics.currentPayload) {
     displayPayload = stageLyrics.currentPayload;

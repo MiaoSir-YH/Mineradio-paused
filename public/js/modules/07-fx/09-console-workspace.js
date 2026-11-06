@@ -102,6 +102,7 @@ var FX_CONSOLE_LAYOUT = [
       ] },
       { key: 'motion', title: '歌词动画', hint: '滚动手感、上下文层次与故障效果', items: [
         fxConsoleItem('lyric-motion-style-seg', '歌词动画', '漂浮 柔滑 玻璃 线光 故障'),
+        fxConsoleItem('t-lyricSkyline', '天际屏歌词', '天际屏 小米 YU7 立体歌词 词云 长条'),
         fxConsoleItem('lyric-glitch-controls', '故障细节', '故障强度 切片 色散 触发速度 抖动 鼓点'),
         fxConsoleItem('fx-lyriccontextopacity', '上下句清晰', '上下文透明度'),
         fxConsoleItem('fx-lyriccontextspread', '上下句间距', '上下文距离'),

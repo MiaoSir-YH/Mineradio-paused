@@ -351,6 +351,7 @@ function updateFxInputs() {
   if (backgroundStarRiverToggle) backgroundStarRiverToggle.classList.toggle('on', fx.backgroundStarRiver !== false);
   var lyricVerticalFloatToggle = document.getElementById('t-lyricVerticalFloat');
   if (lyricVerticalFloatToggle) lyricVerticalFloatToggle.classList.toggle('on', fx.lyricVerticalFloat !== false);
+  if (typeof updateSkylineLyricsControls === 'function') updateSkylineLyricsControls();
   var lyricLiveViewportFitToggle = document.getElementById('t-lyricLiveViewportFit');
   if (lyricLiveViewportFitToggle) lyricLiveViewportFitToggle.classList.toggle('on', fx.lyricLiveViewportFit !== false);
   var lyricContextHighQualityToggle = document.getElementById('t-lyricContextHighQuality');
@@ -722,6 +723,7 @@ function ensureLyricPrimaryControls() {
     't-lyricGlowParticles',
     't-backgroundStarRiver',
     't-lyricVerticalFloat',
+    't-lyricSkyline',
     't-lyricPauseHold'
   ].forEach(function (id) { moveToggleToGrid(id, grid); });
 }

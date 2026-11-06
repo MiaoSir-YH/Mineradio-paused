@@ -990,7 +990,8 @@ function desktopLyricsPlaybackPayload() {
   return {
     time: Math.max(0, time),
     duration: Math.max(0, duration),
-    rate: clampRange(rate, 0.25, 4)
+    rate: clampRange(rate, 0.25, 4),
+    lyricOffset: typeof getActiveLyricTimingOffsetSeconds === 'function' ? Number(getActiveLyricTimingOffsetSeconds()) || 0 : 0
   };
 }
 function desktopLyricsActiveBeatMap() {
@@ -1074,8 +1075,20 @@ function desktopLyricsPayload(forceBeatMap, includeCustomFontData) {
     beatMapKey: beatPayload.beatMapKey,
     colors: desktopOverlayColors()
   };
+  // 天际屏：整首歌词只在换歌或每隔几秒时随 pushDesktopLyricsState 发送（skylineLines），平时只带签名。
+  payload.skyline = !!(fx.lyricSkyline && lyricsLines && lyricsLines.length && window.MineradioSkyline);
+  payload.skylineKey = payload.skyline ? window.MineradioSkyline.signature(lyricsLines) : '';
   if (Object.prototype.hasOwnProperty.call(beatPayload, 'beatMap')) payload.beatMap = beatPayload.beatMap;
   return payload;
+}
+function skylineDesktopLines() {
+  return lyricsLines.map(function (line) {
+    var out = { t: line.t, duration: line.duration, text: line.text };
+    if (line.words && line.words.length) {
+      out.words = line.words.map(function (w) { return { text: w.text, t: w.t, d: w.d, c0: w.c0, c1: w.c1 }; });
+    }
+    return out;
+  });
 }
 function wallpaperPayload() {
   var meta = currentDesktopSongMeta();
@@ -1372,8 +1385,15 @@ function pushDesktopLyricsState(force) {
   var colors = payload.colors || {};
   var motion = payload.motion || {};
   var payloadCustomFontId = payload.customFont ? payload.customFont.id : '';
-  var key = payload.enabled + '|' + payload.text + '|' + Math.round(payload.progress * 1000) + '|' + Math.round((payload.progressSpan || 0) * 100) + '|' + payload.playing + '|' + payload.size + '|' + payload.opacity + '|' + payload.y + '|' + payload.clickThrough + '|' + payload.cinema + '|' + payload.highlightFollow + '|' + payload.frameRate + '|' + payload.fontFamily + '|' + payloadCustomFontId + '|' + payload.fontWeight + '|' + payload.letterSpacing + '|' + payload.lineHeight + '|' + payload.lyricScale + '|' + payload.feather + '|' + payload.beatMapKey + '|' + colors.primary + '|' + colors.secondary + '|' + colors.highlight + '|' + colors.glow + '|' + motion.lyricGlow + '|' + motion.lyricGlowBeat + '|' + Math.round((motion.lyricGlowStrength || 0) * 100) + '|' + Math.round((motion.highBloom || 0) * 100) + '|' + Math.round((motion.beatGlow || 0) * 100) + '|' + Math.round((motion.beatPulse || 0) * 100) + '|' + Math.round((motion.bass || 0) * 100);
+  var key = payload.enabled + '|' + payload.text + '|' + Math.round(payload.progress * 1000) + '|' + Math.round((payload.progressSpan || 0) * 100) + '|' + payload.playing + '|' + payload.size + '|' + payload.opacity + '|' + payload.y + '|' + payload.clickThrough + '|' + payload.cinema + '|' + payload.highlightFollow + '|' + payload.frameRate + '|' + payload.fontFamily + '|' + payloadCustomFontId + '|' + payload.fontWeight + '|' + payload.letterSpacing + '|' + payload.lineHeight + '|' + payload.lyricScale + '|' + payload.feather + '|' + payload.beatMapKey + '|' + colors.primary + '|' + colors.secondary + '|' + colors.highlight + '|' + colors.glow + '|' + motion.lyricGlow + '|' + motion.lyricGlowBeat + '|' + Math.round((motion.lyricGlowStrength || 0) * 100) + '|' + Math.round((motion.highBloom || 0) * 100) + '|' + Math.round((motion.beatGlow || 0) * 100) + '|' + Math.round((motion.beatPulse || 0) * 100) + '|' + Math.round((motion.bass || 0) * 100) + '|' + payload.skylineKey;
   if (!force && key === desktopOverlayPushState.lastLyricsKey && now - desktopOverlayPushState.lyricsAt < 900) return;
+  // 换歌时立即发整首歌词，之后每 3 秒补发一次，桌面歌词窗口重建后也能拿到；其余时候发 null，免得主进程每次都转发整首歌词。
+  var sendLines = payload.skyline && (payload.skylineKey !== desktopOverlayPushState.skylineKey || now - (desktopOverlayPushState.skylineAt || 0) > 3000);
+  payload.skylineLines = sendLines ? skylineDesktopLines() : null;
+  if (sendLines) {
+    desktopOverlayPushState.skylineKey = payload.skylineKey;
+    desktopOverlayPushState.skylineAt = now;
+  }
   desktopOverlayPushState.lyricsAt = now;
   desktopOverlayPushState.lastLyricsKey = key;
   desktopOverlayPushState.lastLyricsCustomFontId = payloadCustomFontId;
