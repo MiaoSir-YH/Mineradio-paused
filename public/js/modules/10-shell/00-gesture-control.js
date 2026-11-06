@@ -418,14 +418,9 @@ async function startGestureControl() {
 async function startGestureControlInternal(epoch) {
   showToast('正在加载手势识别…');
   var ownedVideo = null, ownedHands = null, ownedCamera = null;
+  var permissionGrant = null;
+  var desktopApi = typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : window.desktopWindow;
   try {
-    var desktopApi = typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : window.desktopWindow;
-    if (desktopApi && typeof desktopApi.requestGestureCameraPermission === 'function') {
-      var permissionGrant = await desktopApi.requestGestureCameraPermission();
-      if (!permissionGrant || permissionGrant.ok !== true) {
-        throw new Error(permissionGrant && permissionGrant.error || 'GESTURE_CAMERA_PERMISSION_GRANT_FAILED');
-      }
-    }
     await loadScriptOnce('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
     await loadScriptOnce('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
     if (epoch !== gestureStartEpoch || fx.cam !== 'gesture') return false;
@@ -463,6 +458,17 @@ async function startGestureControlInternal(epoch) {
       }
       finally { if (epoch === gestureStartEpoch && gestureHands === ownedHands) gestureInferenceBusy = false; }
     }, width: 480, height: 360 });
+    if (desktopApi && typeof desktopApi.requestGestureCameraPermission === 'function') {
+      permissionGrant = await desktopApi.requestGestureCameraPermission();
+      if (!permissionGrant || permissionGrant.ok !== true) {
+        throw new Error(permissionGrant && permissionGrant.error || 'GESTURE_CAMERA_PERMISSION_GRANT_FAILED');
+      }
+      ownedVideo.__mineradioCameraPermissionGrantId = permissionGrant.grantId || '';
+    }
+    if (epoch !== gestureStartEpoch || fx.cam !== 'gesture' || !gestureHostVisible()) {
+      disposeGestureControlResources(ownedVideo, ownedHands, ownedCamera);
+      return false;
+    }
     await ownedCamera.start();
     if (epoch !== gestureStartEpoch || fx.cam !== 'gesture') {
       disposeGestureControlResources(ownedVideo, ownedHands, ownedCamera);
@@ -490,11 +496,22 @@ async function startGestureControlInternal(epoch) {
     showToast(denied ? '摄像头权限未开启，请在 Windows 隐私设置中允许桌面应用访问摄像头' : '手势启动失败，请检查摄像头是否被其他程序占用');
     persistGestureCameraDisabled(e && (e.message || e.name) || e || 'startup-failed');
     return false;
+  } finally {
+    if (permissionGrant && permissionGrant.grantId && desktopApi && typeof desktopApi.revokeGestureCameraPermission === 'function') {
+      Promise.resolve(desktopApi.revokeGestureCameraPermission(permissionGrant.grantId)).catch(function () {});
+    }
   }
 }
 
 function disposeGestureControlResources(video, hands, camera) {
   function ignoreRejection(result) { if (result && result.catch) result.catch(function () {}); }
+  try {
+    var api = typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : window.desktopWindow;
+    if (video && video.__mineradioCameraPermissionGrantId && api && typeof api.revokeGestureCameraPermission === 'function') {
+      ignoreRejection(api.revokeGestureCameraPermission(video.__mineradioCameraPermissionGrantId));
+      video.__mineradioCameraPermissionGrantId = '';
+    }
+  } catch (_) { }
   try { if (camera && camera.stop) ignoreRejection(camera.stop()); } catch (e) { }
   try { if (video && video.srcObject) video.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
   try { if (hands && hands.close) ignoreRejection(hands.close()); } catch (e) { }

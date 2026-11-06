@@ -708,14 +708,32 @@ function clearQueue() {
   updateEmptyHomeVisibility({ forceLoad: false });
 }
 function removeFromQueue(idx) {
-  if (idx < 0 || idx >= playQueue.length) return;
+  idx = Number(idx);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= playQueue.length) return;
+  var removedCurrent = idx === currentIdx;
   playQueue.splice(idx, 1);
-  if (currentIdx >= playQueue.length) currentIdx = playQueue.length - 1;
+  if (!playQueue.length) {
+    trackSwitchToken += 1;
+    finalizeListenSession(false);
+    pauseCurrentAudioForTrackSwitch();
+    clearQueue();
+    return;
+  }
+  if (idx < currentIdx) currentIdx -= 1;
+  if (removedCurrent) {
+    currentIdx = -1;
+    var next = idx < playQueue.length ? idx : 0;
+    Promise.resolve(playQueueAt(next, { manual: true, skipShuffleOrder: true })).catch(function (error) {
+      console.warn('[RemoveQueueItem]', error);
+    }).finally(forcePlaybackControlsInteractive);
+    return;
+  }
   safeRenderQueuePanel('remove-queue-item');
   safeShelfRebuild('remove-queue-item');
   updateCustomCoverButton();
   updateCustomLyricControls();
   updateEmptyHomeVisibility({ forceLoad: false });
+  if (typeof saveLastPlaybackSnapshot === 'function') saveLastPlaybackSnapshot(true, 'remove-queue-item');
 }
 function playModeLabel(mode) {
   return { loop: '顺序循环', shuffle: '随机播放', single: '单曲循环' }[mode] || '顺序循环';

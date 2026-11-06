@@ -747,6 +747,3 @@ async function setCamMode(m) {
   syncGestureCameraUi();
   return started === true;
 }
-
-// ============================================================
-//  更新提示预览

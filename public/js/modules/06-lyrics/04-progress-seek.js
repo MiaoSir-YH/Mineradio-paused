@@ -28,6 +28,7 @@ var progressDragState = {
 var progressLyricPreviewRaf = 0;
 function progressSeekPreviewVisualReady() {
   if (!lyricsLines || !lyricsLines.length || (fx && fx.particleLyrics === false)) return true;
+  if (typeof skylineLyricsActive === 'function' && skylineLyricsActive()) return true;
   if (typeof stageLyricProgressSeekVisualReady !== 'function') return true;
   return stageLyricProgressSeekVisualReady(getProgressPreviewClockSeconds());
 }

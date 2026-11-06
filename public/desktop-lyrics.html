@@ -398,17 +398,20 @@
       }
     }
     // 天际屏：主窗口换歌时发来整首歌词（skylineLines），平时只带签名（skylineKey）。
-    var skyline = { inst: null, key: '', on: false };
+    var skyline = { inst: null, key: '', contentKey: '', on: false };
     function applySkylineState(next) {
       var want = !!next.skyline && !!window.MineradioSkyline;
       if (want && !skyline.inst) skyline.inst = MineradioSkyline.create(document.getElementById('skyline'), { opaque: false });
       if (want) {
         var key = String(next.skylineKey || '');
-        if (Array.isArray(next.skylineLines) && (key !== skyline.key || !skyline.inst.lines.length)) {
+        if (Array.isArray(next.skylineLines)) {
+          var contentKey = MineradioSkyline.signature(next.skylineLines);
+          if (contentKey !== skyline.contentKey) skyline.inst.setLines(next.skylineLines);
+          skyline.contentKey = contentKey;
           skyline.key = key;
-          skyline.inst.setLines(next.skylineLines);
         } else if (key !== skyline.key) {
           skyline.key = key;
+          skyline.contentKey = '';
           skyline.inst.setLines([]); // 等主窗口发来新歌词
         }
       }

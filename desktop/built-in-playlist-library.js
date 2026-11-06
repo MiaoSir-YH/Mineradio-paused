@@ -18,7 +18,7 @@ const TRACK_FIELDS = [
   'sqHash', 'sq_hash', 'resHash', 'res_hash',
   'name', 'title', 'artist', 'album', 'cover', 'duration', 'durationMs', 'dt',
   'fee', 'Fee', 'playable', 'playbackMode', 'recommendationSource',
-  'localKey', 'localFileId', 'localUrl', 'localPath', 'localMissing', 'hasLyric', 'lyricSource',
+  'localKey', 'localFileId', 'localPath', 'localMissing', 'hasLyric', 'lyricSource',
   'vipRequired', 'needVip', 'onlyVipPlayable', 'only_vip_playable',
   'privilege', 'Privilege', 'mediaPrivilege', 'media_privilege',
 ];
@@ -61,8 +61,12 @@ function cleanValue(value, depth = 0) {
 function trackIdentity(track) {
   const provider = normalizeProvider(track || {});
   let value = '';
-  if (provider === 'local') value = track.localFileId || track.localKey || String(track.id || '').replace(/^local:/, '');
-  else if (provider === 'qq') value = track.mid || track.songmid || track.id;
+  if (provider === 'local') {
+    const ids = [track.localFileId, track.localKey, track.id]
+      .map((id) => cleanText(id, '', 512).replace(/^local:/i, ''));
+    const persistentId = ids.find((id) => /^[a-f0-9]{24}$/i.test(id));
+    value = persistentId ? persistentId.toLowerCase() : ids.find(Boolean);
+  } else if (provider === 'qq') value = track.mid || track.songmid || track.id;
   else if (provider === 'kugou') value = track.hash || track.fileHash || track.audioHash || track.id;
   else if (provider === 'qishui') value = track.id || track.providerSongId || track.trackId || track.track_id;
   else value = track.id;
@@ -88,6 +92,11 @@ function sanitizeTrack(source) {
   track.artist = cleanText(track.artist, provider === 'local' ? '本地文件' : '未知歌手', 1000);
   const identity = trackIdentity(track);
   if (!identity) return null;
+  if (provider === 'local') {
+    const localId = identity.slice('local:'.length);
+    if (/^[a-f0-9]{24}$/.test(localId)) track.localFileId = localId;
+    if (/^(?:blob:|mineradio-local:)/i.test(track.cover || '')) delete track.cover;
+  }
   track.builtInIdentity = identity;
   const serialized = JSON.stringify(track);
   if (Buffer.byteLength(serialized, 'utf8') > MAX_TRACK_BYTES) return null;
@@ -119,7 +128,9 @@ class BuiltInPlaylistLibrary {
   constructor(options = {}) {
     this.userDataPath = path.resolve(String(options.userDataPath || process.cwd()));
     this.indexPath = path.join(this.userDataPath, BUILT_IN_PLAYLIST_FILE);
+    this.resolveLocalTrack = typeof options.resolveLocalTrack === 'function' ? options.resolveLocalTrack : null;
     this.playlists = [];
+    this.revision = 0;
     this.mutation = Promise.resolve();
     this.loadIndex();
   }
@@ -140,7 +151,7 @@ class BuiltInPlaylistLibrary {
   }
 
   summary(playlist) {
-    const first = playlist.tracks[0] || {};
+    const first = playlist.tracks.length ? this.playbackTrack(playlist.tracks[0]) : {};
     return {
       id: playlist.id,
       provider: 'mineradio',
@@ -161,9 +172,17 @@ class BuiltInPlaylistLibrary {
     return {
       ok: true,
       version: BUILT_IN_PLAYLIST_VERSION,
+      revision: this.revision,
       count: this.playlists.length,
       playlists: this.playlists.map((playlist) => this.summary(playlist)),
     };
+  }
+
+  playbackTrack(track) {
+    if (track.provider !== 'local') return { ...track };
+    const id = track.localFileId || track.builtInIdentity.slice('local:'.length);
+    const local = this.resolveLocalTrack && this.resolveLocalTrack(id);
+    return local ? { ...track, ...local, builtInIdentity: track.builtInIdentity } : { ...track, localMissing: true };
   }
 
   page(id, options = {}) {
@@ -171,11 +190,12 @@ class BuiltInPlaylistLibrary {
     if (!playlist) return { ok: false, error: 'BUILT_IN_PLAYLIST_NOT_FOUND', playlist: null, tracks: [], total: 0, nextOffset: 0, hasMore: false };
     const offset = Math.max(0, Math.floor(Number(options.offset) || 0));
     const limit = Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 96)));
-    const tracks = playlist.tracks.slice(offset, offset + limit).map((track) => ({ ...track }));
+    const tracks = playlist.tracks.slice(offset, offset + limit).map((track) => this.playbackTrack(track));
     const nextOffset = offset + tracks.length;
     return {
       ok: true,
       playlist: this.summary(playlist),
+      revision: this.revision,
       tracks,
       total: playlist.tracks.length,
       nextOffset,
@@ -208,6 +228,7 @@ class BuiltInPlaylistLibrary {
       const result = await worker(next);
       await this.persist(next);
       this.playlists = next;
+      this.revision += 1;
       return { ...this.listSync(), ...(result || {}) };
     };
     const pending = this.mutation.then(operation, operation);
@@ -257,12 +278,12 @@ class BuiltInPlaylistLibrary {
     });
   }
 
-  removeTrack(id, index) {
+  removeTrack(id, identity) {
     return this.mutate((next) => {
       const playlist = next.find((item) => item.id === cleanText(id, '', 64).toLowerCase());
       if (!playlist) throw Object.assign(new Error('BUILT_IN_PLAYLIST_NOT_FOUND'), { code: 'BUILT_IN_PLAYLIST_NOT_FOUND' });
-      const target = Math.floor(Number(index));
-      if (!Number.isFinite(target) || target < 0 || target >= playlist.tracks.length) throw Object.assign(new Error('BUILT_IN_PLAYLIST_TRACK_NOT_FOUND'), { code: 'BUILT_IN_PLAYLIST_TRACK_NOT_FOUND' });
+      const target = playlist.tracks.findIndex((track) => track.builtInIdentity === identity);
+      if (target < 0) throw Object.assign(new Error('BUILT_IN_PLAYLIST_TRACK_NOT_FOUND'), { code: 'BUILT_IN_PLAYLIST_TRACK_NOT_FOUND' });
       playlist.tracks.splice(target, 1);
       playlist.updatedAt = Date.now();
       return { playlist: this.summary(playlist), removedIndex: target };

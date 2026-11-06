@@ -662,16 +662,15 @@ function resolveArtistSongForDetail(song, artist) {
     return null;
   });
 }
-function setCustomCoverForCurrent(dataUrl, opts) {
+function setCustomCoverForSong(song, dataUrl, opts) {
   if (!dataUrl) return;
-  var song = currentCoverSong();
+  var current = currentCoverSong();
+  if (!song && current) return;
   var saved = false;
-  var hasKey = false;
+  var key = songCustomCoverKey(song);
   if (song) {
-    var key = songCustomCoverKey(song);
     song.customCover = dataUrl;
     if (key) {
-      hasKey = true;
       customCoverMap[key] = dataUrl;
       saved = saveCustomCoverMap();
       for (var i = 0; i < playQueue.length; i++) {
@@ -680,11 +679,13 @@ function setCustomCoverForCurrent(dataUrl, opts) {
       if (currentLocalSong && songCustomCoverKey(currentLocalSong) === key) currentLocalSong.customCover = dataUrl;
     }
   }
-  applyCoverDataUrl(dataUrl, opts);
+  if (current === song || (key && songCustomCoverKey(current) === key)) {
+    applyCoverDataUrl(dataUrl, Object.assign({}, opts, { trackToken: trackSwitchToken }));
+  }
   safeRenderQueuePanel('custom-cover-apply', { scrollCurrent: miniQueueOpen });
   safeShelfRebuild('custom-cover-apply');
   updateCustomCoverButton();
-  showToast(song ? (!hasKey ? '封面已应用' : (saved ? '封面已保存' : '封面已应用，存储空间不足')) : '已应用临时封面');
+  showToast(song ? (!key ? '封面已应用' : (saved ? '封面已保存' : '封面已应用，存储空间不足')) : '已应用临时封面');
 }
 function updateCustomCoverButton() {
   if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession('custom-cover');
@@ -1053,6 +1054,7 @@ function setCustomLyricStatus(text, tone) {
   el.classList.toggle('good', tone === 'good');
   el.classList.toggle('fail', tone === 'fail');
 }
+var customLyricEditTarget = null;
 function openCustomLyricModal() {
   var song = currentLyricSong();
   if (!song) {
@@ -1060,6 +1062,7 @@ function openCustomLyricModal() {
     return;
   }
   if (immersiveMode) setImmersiveMode(false);
+  customLyricEditTarget = { key: songCustomLyricKey(song) };
   var entry = getCustomLyricEntry(song);
   var title = document.getElementById('custom-lyric-title');
   var sub = document.getElementById('custom-lyric-sub');
@@ -1072,14 +1075,15 @@ function openCustomLyricModal() {
   setTimeout(function () { if (input) input.focus(); }, 120);
 }
 function closeCustomLyricModal() {
+  customLyricEditTarget = null;
   closeGsapModal(document.getElementById('custom-lyric-modal'));
 }
 function saveCustomLyricForCurrent() {
-  var song = currentLyricSong();
-  var key = songCustomLyricKey(song);
+  var target = customLyricEditTarget;
+  var key = target && target.key;
   var input = document.getElementById('custom-lyric-input');
   var text = input ? String(input.value || '').trim() : '';
-  if (!song || !key) {
+  if (!key) {
     setCustomLyricStatus('请先播放或选择一首歌', 'fail');
     showToast('先播放或选择一首歌');
     return;
@@ -1097,15 +1101,17 @@ function saveCustomLyricForCurrent() {
   customLyricPrefs[key] = 'custom';
   var saved = saveCustomLyricMap();
   saveCustomLyricPrefs();
-  applyCustomLyricState(song, true);
-  setCustomLyricStatus(saved ? ('已保存 ' + lines.length + ' 行，并切换为自定义歌词') : '已应用，但本地存储空间不足', saved ? 'good' : 'fail');
-  showToast(saved ? '自定义歌词已保存' : '自定义歌词已应用');
-  setTimeout(function () { closeCustomLyricModal(); }, 520);
+  var song = currentLyricSong();
+  var isCurrent = songCustomLyricKey(song) === key;
+  if (isCurrent) applyCustomLyricState(song, true);
+  var savedText = '已保存 ' + lines.length + ' 行' + (isCurrent ? '，并切换为自定义歌词' : '');
+  setCustomLyricStatus(saved ? savedText : '本地存储空间不足，歌词仅在本次运行中可用', saved ? 'good' : 'fail');
+  showToast(saved ? '自定义歌词已保存' : '自定义歌词仅在本次运行中可用');
+  setTimeout(function () { if (customLyricEditTarget === target) closeCustomLyricModal(); }, 520);
 }
 function deleteCustomLyricForCurrent() {
-  var song = currentLyricSong();
-  var key = songCustomLyricKey(song);
-  if (!song || !key) {
+  var key = customLyricEditTarget && customLyricEditTarget.key;
+  if (!key) {
     setCustomLyricStatus('请先播放或选择一首歌', 'fail');
     return;
   }
@@ -1117,11 +1123,12 @@ function deleteCustomLyricForCurrent() {
   delete customLyricPrefs[key];
   saveCustomLyricMap();
   saveCustomLyricPrefs();
-  applyOriginalLyricsState();
+  var isCurrent = songCustomLyricKey(currentLyricSong()) === key;
+  if (isCurrent) applyOriginalLyricsState();
   var input = document.getElementById('custom-lyric-input');
   if (input) input.value = '';
-  setCustomLyricStatus('已删除，恢复原歌词', 'good');
-  showToast('已恢复原歌词');
+  setCustomLyricStatus(isCurrent ? '已删除，恢复原歌词' : '已删除自定义歌词', 'good');
+  showToast(isCurrent ? '已恢复原歌词' : '已删除自定义歌词');
 }
 var QISHUI_LIKE_ACCOUNT_ACTIONS_ENABLED = true;
 var QISHUI_PLAYLIST_WRITE_ACTIONS_ENABLED = true;

@@ -1,56 +1,20 @@
 # Mineradio
 
-> **项目状态：长期停更**
+> **当前仓库：Mineradio fork**
 >
-> 目前因个人原因，Mineradio 项目处于长期停更状态。感兴趣的个人玩家可随意使用本项目进行创作，也可以自行修改和修复 bug。希望各位玩得开心，也希望世界和平，享受我们的音乐。
+> 本仓库基于 Mineradio 继续维护和修复。原项目的长期停更公告不代表本 fork 的维护状态。
 >
-> 本仓库保留公开源码、历史版本和下载说明，方便个人玩家 Fork、建立分支或制作二创版本。
+> 本 fork 已移除原项目的赞助渠道和网盘下载入口，更新检测与版本跳转使用当前仓库 `MiaoSir-YH/Mineradio-paused` 的 Releases。原作者署名、版权与开源许可证保留。
 
 ![Mineradio 暗场启动页](./docs/assets/readme/cinema-beat-smoke.png)
 
 Mineradio 是一款 Windows 桌面沉浸式音乐播放器，把搜索播放、歌词舞台、粒子视觉、3D 歌单架和完整桌面模式组合成一个更接近现场感的私人音乐空间。
 
-## 立即下载 Windows 安装包
-
-> 本次下载入口已更换，请使用下面的新网盘链接，并更新旧收藏。通过公告中的网盘入口下载，可以继续使用现有版本；项目目前处于长期停更状态。
-
-| 下载入口 | 推荐人群 | 链接 |
-| --- | --- | --- |
-| 夸克盘 | 夸克用户 | [下载 Mineradio 2.2.0](https://pan.quark.cn/s/4b124d3e81d3) |
-| 百度云 | 百度网盘用户（提取码 `SJHP`） | [下载 Mineradio 2.2.0](https://pan.baidu.com/s/17CwpHUza67w_Grgc3s5nOw?pwd=SJHP) |
-| GitHub Release | 版本说明与源码 | [查看 Mineradio 2.2.0](https://github.com/XxHuberrr/Mineradio/releases/tag/v2.2.0) |
-
-本页、发布公告和软件更新入口使用相同的两条新链接。旧分享地址不再作为本次版本的下载入口。
-
-安装时只需要下载并运行 `Mineradio-2.2.0-Setup.exe`。不要把 `.blockmap`、`latest.yml` 或 `win-unpacked` 当成正式安装包。
-
-2.1.0 用户如果未看到更新提醒，请从托盘彻底退出后重新打开软件，切回普通窗口，等待约 30 秒后查看右上角更新箭头。旧版不会自动弹出公告；也可以直接使用上面的新网盘链接下载安装包。
-
-## 下载或安装被拦截怎么办
-
-小众 Electron 桌面软件、未签名安装包有时会被浏览器、Windows Defender 或 SmartScreen 提示风险。请先确认安装包来自本次公告的下载入口，文件名是 `Mineradio-2.2.0-Setup.exe`。
-
-1. 浏览器下载栏提示风险时，打开下载列表，点这条下载右侧的 `...` 三个点，选择 `保留` / `仍要保留` / `显示更多` 后继续保留。
-2. Windows SmartScreen 弹出蓝色拦截窗口时，点 `更多信息`，再点 `仍要运行`。
-3. 如果杀毒软件明确显示木马、高危或已经隔离，不要强行运行；删除该文件后重新从上面的网盘入口下载，仍然异常请带截图反馈给作者。
-
-## 作者支持
-
-如果 Mineradio 陪你多听了一首歌，也欢迎请作者一杯咖啡。
-
-[查看完整支持页](./docs/SUPPORT.md)
-
-![Mineradio 作者支持渠道](./docs/assets/support/mineradio-author-support-poster.png)
-
-Mineradio 2.2 是历史稳定版本，修复了音乐接口的登录与播放问题，改善歌单加载和网络异常恢复，并加入更多手势操作与粒子预设。
-
 ## 当前版本
 
-当前版本：`2.2.0`
+当前版本：`2.2.2`
 
-状态：Mineradio 2.2.0 历史正式版；项目目前长期停更。
-
-> 安全提示：`v1.0.10` 及更早旧安装包不再建议继续安装或传播。请使用本次公告提供的 `Mineradio-2.2.0-Setup.exe`。
+`main` 分支的每次推送都会运行回归检查并构建 Windows x64 安装包，产物与检查结果保存在对应的 GitHub Actions 运行中。
 
 ## 核心特性
 
@@ -65,32 +29,21 @@ Mineradio 2.2 是历史稳定版本，修复了音乐接口的登录与播放问
 - 右键唤起 3D 歌单架，支持歌单队列浏览
 - 网易云音乐账号、搜索、歌单、播客等体验接入
 - QQ 音乐搜索、登录态与音源补充接入
-- GitHub Releases 更新检测与下载入口
 - 首次启动内置「默认测试」视觉用户存档，软件内默认视觉参数与该存档一致
-
-## 使用说明
-
-Windows 用户可以从本次发布公告列出的新网盘入口下载安装包。
-
-正式分发以 `Mineradio-2.2.0-Setup.exe` 为准，不建议直接使用 `win-unpacked` 目录。安装包会创建桌面快捷方式。
-
-已经安装过旧版本的用户可直接运行 `Mineradio-2.2.0-Setup.exe` 完成更新。软件内更新入口只会打开浏览器下载页，不会在客户端内下载或应用补丁。
 
 ## 开发运行
 
 ```bash
-npm install
+npm ci
 npm start
 npm run build:win
 ```
 
 桌面版入口由 Electron 主进程加载本地服务。`npm run build:win` 会生成 Windows NSIS 安装包，产物位于 `dist/`。
 
-## 更新机制
+## 构建与更新
 
-Mineradio 会请求 GitHub Releases latest 检测新版本。远端版本高于本地版本时，应用内更新入口会展示 Release 内容，并通过系统浏览器打开可选网盘线路；即使 Release 附带完整安装包，`2.0.3+` 客户端也不会读取、下载、缓存或应用该附件与补丁。
-
-本地验证更新链路时，可以通过 `MINERADIO_UPDATE_MANIFEST` 指向一个本地 manifest JSON 或 HTTP 地址来模拟线上 Release。
+本 fork 从当前仓库 `MiaoSir-YH/Mineradio-paused` 检测正式 Release，并通过系统浏览器打开对应版本的发布页。原项目的更新源和网盘入口已移除。构建流程与手动发布边界见 [RELEASE.md](./RELEASE.md)。推送 `main` 只生成构建产物，不会发布或覆盖历史 Release。
 
 ## 第三方音乐平台说明
 

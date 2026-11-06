@@ -8,8 +8,6 @@ Windows x64 安装包：`Mineradio-2.2.1-Setup.exe`。
 - 保留平台登录、播放授权与会员权益检查，以及本地音乐、播客和当前歌曲手动换源功能。
 
 本次安装包从当前源码完整构建，保留正式版应用标识，可用于更新现有安装。
-安装包从 [v2.2.1 GitHub Release](https://github.com/MiaoSir-YH/Mineradio-paused/releases/tag/v2.2.1)
-附件直接下载，历史网盘内容未更新。
 
 构建命令：Windows 使用 `npm run build:win -- --x64 --publish never`；
 Linux（已安装 Wine）使用 `npm run build:win:linux`，通过 electron-builder

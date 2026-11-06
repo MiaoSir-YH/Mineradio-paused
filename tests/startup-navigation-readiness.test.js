@@ -75,7 +75,7 @@ function createLoadWithRetryHarness(env = {}) {
   const loadMainWindowWithRetry = new Function(
     'URL',
     'isTrustedMainDocumentUrl',
-    'mainServerPort',
+    'mainRendererOrigin',
     'process',
     'writeStartupState',
     'STARTUP_NAVIGATION_TIMEOUT_MS',
@@ -86,7 +86,7 @@ function createLoadWithRetryHarness(env = {}) {
   )(
     URL,
     isTrustedMainDocumentUrl,
-    31381,
+    'http://127.0.0.1:31381',
     processStub,
     (phase, details) => states.push({ phase, details }),
     15000,

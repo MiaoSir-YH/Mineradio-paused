@@ -6,12 +6,15 @@ var SKYLINE_MAIN_Y = 0.46;  // 当前句在歌词带里的高度，与 skyline-l
 var SKYLINE_WORD_FONT = 96; // 词云单字贴图的字号（像素）
 var skylineLyrics = {
   inst: null, canvas: null, texture: null, mesh: null, root: null, source: null,
-  words: {}, hidden: [], wasActive: false, color: null, colorKey: '', cam: null
+  words: {}, hidden: [], wasActive: false, color: null, colorKey: '', cam: null,
+  view: null, rasterAt: 0, rasterTime: -1, rasterPlaying: false, themeKey: '', pendingWords: false, canvasUploaded: false
 };
 var skylineTmp = null, skylinePlaneGeo = null;
 
 function skylineLyricsActive() {
-  return !!(fx && fx.lyricSkyline && fx.particleLyrics && lyricsLines && lyricsLines.length && window.MineradioSkyline);
+  if (!fx || !fx.lyricSkyline || !fx.particleLyrics || !lyricsLines || !lyricsLines.length || !window.MineradioSkyline || !audio || audio.ended) return false;
+  if (typeof progressDragState !== 'undefined' && progressDragState.active) return true;
+  return !audio.paused || fx.lyricPauseHold !== false;
 }
 function updateSkylineLyricsControls() {
   var toggle = document.getElementById('t-lyricSkyline');
@@ -71,15 +74,18 @@ function disposeSkylineWord(word) {
 }
 // 词按景深放在“镜头 → 平面上原位置”的连线上：z 等于 FOCUS_Z 时就在当前句所在的平面上，z 更小就更靠近镜头（更大、更虚），
 // z 更大就在平面后面。镜头位置做了平滑，所以平时布局不变；镜头晃动（鼓点、拖动）时远近的词错开，看得出前后关系。
-function syncSkylineWords(view, unit, mainRow, wallDt) {
+function syncSkylineWords(view, unit, mainRow, wallDt, allowWordUpload) {
   var root = skylineLyrics.root, focus = window.MineradioSkyline.FOCUS_Z, frame = (skylineLyrics.frame = (skylineLyrics.frame || 0) + 1);
   var cam = root.worldToLocal(skylineTmp.cam.copy(camera.position));
   if (!skylineLyrics.cam) skylineLyrics.cam = cam.clone();
   else skylineLyrics.cam.lerp(cam, 1 - Math.exp(-wallDt / 0.6));
   var C = skylineLyrics.cam;
+  var pending = false;
   view.items.forEach(function (it) {
     var word = skylineLyrics.words[it.id];
     if (!word) {
+      if (!allowWordUpload) { pending = true; return; }
+      allowWordUpload = false;
       word = skylineLyrics.words[it.id] = createSkylineWord(it.text);
       root.add(word.mesh);
     }
@@ -102,6 +108,7 @@ function syncSkylineWords(view, unit, mainRow, wallDt) {
     delete skylineLyrics.words[id];
   });
   skylineLyrics.mesh.renderOrder = Math.round(1000 - focus * 600);
+  return pending;
 }
 // 平面铺满歌词所在距离上的整个画面宽度；当前句那一行正好落在原 3D 歌词的位置（group 原点）。
 // 返回贴图 1 像素对应的局部长度，以及当前句那一行在贴图里的像素高度。
@@ -155,8 +162,10 @@ function clearSkylineWords() {
   Object.keys(skylineLyrics.words).forEach(function (id) { disposeSkylineWord(skylineLyrics.words[id]); });
   skylineLyrics.words = {};
   skylineLyrics.cam = null;
+  skylineLyrics.view = null;
+  skylineLyrics.pendingWords = false;
 }
-function updateSkylineLyrics(dt) {
+function updateSkylineLyrics(dt, allowRaster) {
   var on = skylineLyricsActive() && !!stageLyrics.group && typeof camera !== 'undefined';
   if (on !== skylineLyrics.wasActive) {
     skylineLyrics.wasActive = on;
@@ -172,26 +181,46 @@ function updateSkylineLyrics(dt) {
   var root = ensureSkylineRoot();
   if (root.parent !== stageLyrics.group) stageLyrics.group.add(root);
   hideStageLyricsChildren();
-  if (skylineLyrics.source !== lyricsLines) {
-    skylineLyrics.source = lyricsLines;
-    skylineLyrics.inst.setLines(lyricsLines);
-  }
-  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  var sourceChanged = skylineLyrics.source !== lyricsLines;
+  var dpr = Math.min(2, (typeof renderer !== 'undefined' && renderer.getPixelRatio && renderer.getPixelRatio()) || window.devicePixelRatio || 1);
   var texW = Math.round(Math.max(960, Math.min(2560, innerWidth * dpr)));
   var texH = Math.round(texW / 9 * (1 + 2 * SKYLINE_PAD));
-  skylineLyrics.inst.size = { w: texW, h: texH };
-  var plane = placeSkylinePlane(texW, texH);
   var raw = typeof stageLyricPlaybackSeconds === 'function' ? stageLyricPlaybackSeconds() : (Number(audio && audio.currentTime) || 0);
   var time = typeof getAdjustedLyricPlaybackTime === 'function' ? getAdjustedLyricPlaybackTime(raw) : raw;
   var rate = audio && audio.playbackRate > 0 ? audio.playbackRate : 1;
   var theme = window.MineradioSkyline.themeFromColors(desktopOverlayColors());
+  var themeKey = [theme.unsung, theme.sung, theme.glow, theme.cloud, theme.spark].join('|');
+  var moving = !!(playing && !audio.paused);
+  var needsRaster = sourceChanged || !skylineLyrics.view || skylineLyrics.canvas.width !== texW || skylineLyrics.canvas.height !== texH || skylineLyrics.themeKey !== themeKey;
+  // The main canvas and incoming cloud words share one texture upload per frame.
+  var deferToWord = !needsRaster && skylineLyrics.pendingWords && skylineLyrics.canvasUploaded;
+  var drewCanvas = !deferToWord && (needsRaster || (allowRaster && (
+    moving || moving !== skylineLyrics.rasterPlaying || time !== skylineLyrics.rasterTime || skylineLyrics.inst.needsPausedFrame()
+  )));
+  if (drewCanvas) {
+    skylineLyrics.inst.size = { w: texW, h: texH };
+    if (sourceChanged) {
+      clearSkylineWords();
+      skylineLyrics.source = lyricsLines;
+      skylineLyrics.inst.setLines(lyricsLines);
+    }
+    var now = performance.now();
+    var rasterDt = skylineLyrics.rasterAt ? Math.min(0.1, (now - skylineLyrics.rasterAt) / 1000) : dt;
+    skylineLyrics.inst.render(time, moving ? rasterDt : 0, theme, rate);
+    skylineLyrics.texture.needsUpdate = true;
+    skylineLyrics.view = skylineLyrics.inst.cloudView();
+    skylineLyrics.rasterAt = now;
+    skylineLyrics.rasterTime = time;
+    skylineLyrics.rasterPlaying = moving;
+    skylineLyrics.themeKey = themeKey;
+  }
   if (skylineLyrics.colorKey !== theme.cloud) {
     skylineLyrics.colorKey = theme.cloud;
     skylineLyrics.color.setStyle(theme.cloud || '#ffffff');
   }
-  skylineLyrics.inst.render(time, playing ? dt : 0, theme, rate);
-  skylineLyrics.texture.needsUpdate = true;
-  syncSkylineWords(skylineLyrics.inst.cloudView(), plane.unit, plane.mainRow, dt);
+  var plane = placeSkylinePlane(texW, texH);
+  skylineLyrics.pendingWords = syncSkylineWords(skylineLyrics.view, plane.unit, plane.mainRow, dt, allowRaster && !drewCanvas);
+  if (allowRaster || drewCanvas) skylineLyrics.canvasUploaded = drewCanvas;
 }
 function toggleLyricSkyline() {
   fx.lyricSkyline = !fx.lyricSkyline;

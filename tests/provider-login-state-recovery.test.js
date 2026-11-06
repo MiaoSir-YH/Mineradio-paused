@@ -112,7 +112,7 @@ test('the shared badge retains QQ pending and verified ordinary account states',
   assert.doesNotMatch(ordinary, /待同步/);
 });
 
-async function qrRoute(data, status = { loggedIn: true, webSession: true }) {
+async function qrRoute(data, status = { loggedIn: true, webSession: true }, interruptVerification = false) {
   const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
   const start = source.indexOf("  if (pn === '/api/qishui/login/check')");
   const end = source.indexOf("  if (pn === '/api/qishui/status'", start);
@@ -121,10 +121,11 @@ async function qrRoute(data, status = { loggedIn: true, webSession: true }) {
   let saved = 0;
   const context = vm.createContext({
     pn: '/api/qishui/login/check', url: new URL('http://localhost/api/qishui/login/check?token=fixture-token'), res: {},
-    qishuiQrLogin: { checkQrConnect: async () => ({ data }), getStatus: () => ({ loggedIn: true }), getCookie: () => 'sessionid=fixture' },
+    qishuiSessionGeneration: 1,
+    qishuiQrLogin: { checkQrConnect: async () => ({ data }), getStatus: () => ({ loggedIn: true, qrConfirmed: true }), getCookie: () => 'sessionid=fixture' },
     qishuiCookieHasLogin: () => true,
     saveQishuiCookie: () => { saved++; },
-    handleQishuiStatus: async () => status,
+    handleQishuiStatus: async () => { if (interruptVerification) context.qishuiSessionGeneration++; return status; },
     sendJSON: (_, value) => { response = value; },
     console: { error() {} },
   });
@@ -153,6 +154,9 @@ test('only a newly confirmed and valid QR session is saved', async () => {
   const pending = await qrRoute(data, { loggedIn: false, webSession: false, stale: true });
   assert.equal(pending.response.status, 'verifying');
   assert.equal(pending.saved, 0);
+  const superseded = await qrRoute(data, { loggedIn: true, webSession: true }, true);
+  assert.equal(superseded.response.status, 'expired');
+  assert.equal(superseded.saved, 0, 'logout or a new QR attempt during account verification must invalidate the old result');
 });
 
 test('a rejected fresh session stops the QR poll and displays a rescan action', async () => {

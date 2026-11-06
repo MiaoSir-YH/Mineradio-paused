@@ -53,26 +53,3 @@ var smoothWheelScrollBound = false;
 var coverProcessToken = 0, aiDepthPipeline = null, aiDepthReady = false, aiDepthBusy = false, aiDepthFailUntil = 0;
 var coverDepthCache = Object.create(null), coverDepthCacheKeys = [];
 var aiDepthLastRunAt = 0, aiDepthMinGapMs = 18000;
-var updatePreviewState = {
-  visible: false,
-  open: false,
-  status: 'idle',
-  progress: 0,
-  currentVersion: '2.2.0',
-  version: '2.2.0',
-  configured: false,
-  preview: false,
-  updateAvailable: false,
-  releaseUrl: '',
-  externalUrl: '',
-  downloadPageUrl: '',
-  downloadPages: [],
-  selectedDownloadPageIndex: 0,
-  errorReason: '',
-  message: '',
-  hero: '当前版本已是最新。',
-  notes: [
-    '请以本次发布公告中的最新网盘链接为准',
-    '改善音乐接口、歌单加载和连续播放体验'
-  ]
-};

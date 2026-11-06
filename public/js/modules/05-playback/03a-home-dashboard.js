@@ -629,6 +629,8 @@ function homeDashboardTodayListenMetrics() {
   var today = new Date(now);
   today.setHours(0, 0, 0, 0);
   var todayStart = today.getTime();
+  var todayKey = homeDashboardDayKey(todayStart);
+  var daily = loadListenRollupV2().daily;
   var history = listenStatsState && Array.isArray(listenStatsState.history) ? listenStatsState.history : [];
   var records = history.filter(function (record) {
     return record && Number(record.playedAt) >= todayStart;
@@ -646,7 +648,9 @@ function homeDashboardTodayListenMetrics() {
       artists[name] = (artists[name] || 0) + Math.max(1, Number(record.listenMs) || 1);
     });
   });
-  if (listenSession && Number(listenSession.startedAt) >= todayStart) {
+  if (daily[todayKey]) listenMs = Math.max(listenMs, Number(daily[todayKey].listenMs) || 0);
+  var activeToday = listenSession && Number(listenSession.startedAt) >= todayStart;
+  if (activeToday) {
     listenMs += Math.max(0, Number(listenSession.listenMs) || 0);
     if (listenSession.key) keys[listenSession.key] = true;
   }
@@ -655,7 +659,10 @@ function homeDashboardTodayListenMetrics() {
   history.forEach(function (record) {
     if (record && record.playedAt) dayMap[homeDashboardDayKey(record.playedAt)] = true;
   });
-  if (records.length || listenSession) dayMap[homeDashboardDayKey(now)] = true;
+  Object.keys(daily).forEach(function (day) {
+    if (daily[day] && Number(daily[day].sessions) > 0) dayMap[day] = true;
+  });
+  if (records.length || activeToday) dayMap[todayKey] = true;
   var streak = 0;
   var cursor = new Date(todayStart);
   if (!dayMap[homeDashboardDayKey(cursor.getTime())]) cursor.setDate(cursor.getDate() - 1);

@@ -25,6 +25,8 @@ const {
 const { extractKugouAuth } = require('../kugou-api');
 const { qishuiCookieHasLogin } = require('../qishui-api');
 const { clearSpotifyToken } = require('../spotify-api');
+const { loadRendererOrigin, createLocalProtocolHandler } = require('./app-origin');
+const { migrateChromiumProfile, migrateAppOwnedFiles } = require('./profile-migration');
 
 registerWallpaperEngineScheme(protocol);
 registerLocalMusicScheme(protocol);
@@ -34,6 +36,7 @@ let localServer = null;
 let mainServerPort = 0;
 let desktopLyricsWindow = null;
 let desktopLyricsState = {};
+let desktopLyricsRequestedEnabled = false;
 let desktopLyricsUserBounds = null;
 let desktopLyricsProgrammaticMove = false;
 let desktopLyricsPointerCapture = false;
@@ -145,15 +148,18 @@ const STARTUP_QA_USER_DATA_PATH = (() => {
   return path.resolve(value);
 })();
 const STABLE_USER_DATA_PATH = STARTUP_QA_USER_DATA_PATH || path.join(app.getPath('appData'), APP_NAME);
+const STABLE_SESSION_DATA_PATH = path.join(STABLE_USER_DATA_PATH, 'chromium-session');
 fs.mkdirSync(STABLE_USER_DATA_PATH, { recursive: true });
 app.setPath('userData', STABLE_USER_DATA_PATH);
 const INITIAL_CACHE_SETTINGS = ensureCacheDirectories(readCacheSettings());
+const CHROMIUM_DISK_CACHE_PATH = path.join(chromiumSessionDataPath(INITIAL_CACHE_SETTINGS), 'Cache');
+let mainRendererOrigin = loadRendererOrigin(STABLE_USER_DATA_PATH, false);
 const loginEasterEggGate = new LoginEasterEggGate({
   userDataPath: STABLE_USER_DATA_PATH,
   credentialRoots: () => [
     chromiumSessionDataPath(cacheSettings || INITIAL_CACHE_SETTINGS),
     (() => { try { return app.getPath('sessionData'); } catch (_) { return ''; } })(),
-    path.join(__dirname, '..'),
+    STARTUP_QA_USER_DATA_PATH ? '' : path.join(__dirname, '..'),
   ],
 });
 const NATIVE_HELPER_TEMP_PATH = INITIAL_CACHE_SETTINGS.nativePath;
@@ -161,7 +167,10 @@ fs.mkdirSync(NATIVE_HELPER_TEMP_PATH, { recursive: true });
 process.env.MINERADIO_NATIVE_TEMP_DIR = NATIVE_HELPER_TEMP_PATH;
 systemMemory.setNativeTempPath(NATIVE_HELPER_TEMP_PATH);
 const localMusicLibrary = new LocalMusicLibrary({ userDataPath: STABLE_USER_DATA_PATH });
-const builtInPlaylistLibrary = new BuiltInPlaylistLibrary({ userDataPath: STABLE_USER_DATA_PATH });
+const builtInPlaylistLibrary = new BuiltInPlaylistLibrary({
+  userDataPath: STABLE_USER_DATA_PATH,
+  resolveLocalTrack: (id) => localMusicLibrary.trackById(id),
+});
 const localMusicImportCapabilities = new Map();
 const wallpaperEngineLibrary = new WallpaperEngineLibrary({ userDataPath: STABLE_USER_DATA_PATH });
 const wallpaperEngineRuntime = new WallpaperEngineRuntime({
@@ -282,6 +291,7 @@ function cacheSettingsConfigPath() {
 }
 
 function defaultCacheRootPath() {
+  if (STARTUP_QA_USER_DATA_PATH) return path.join(STABLE_USER_DATA_PATH, 'cache');
   const dDrive = 'D:\\';
   return fs.existsSync(dDrive)
     ? path.join(dDrive, 'MineradioCache')
@@ -389,8 +399,8 @@ async function directoryUsageBytes(directory) {
 
 async function cacheSettingsSnapshot() {
   const settings = normalizeCacheSettings(cacheSettings);
-  const currentChromiumPath = app.getPath('sessionData');
-  const desiredChromiumPath = chromiumSessionDataPath(settings);
+  const currentChromiumPath = CHROMIUM_DISK_CACHE_PATH;
+  const desiredChromiumPath = path.join(chromiumSessionDataPath(settings), 'Cache');
   const activeBeatmapsPath = process.env.MINERADIO_BEAT_CACHE_DIR || settings.beatmapsPath;
   const activeNativePath = NATIVE_HELPER_TEMP_PATH;
   const wallpaperEnginePath = path.join(settings.nativePath, 'wallpaper-engine-muted-package-cache');
@@ -466,10 +476,11 @@ async function pruneLyricCache() {
 
 let cacheSettings = INITIAL_CACHE_SETTINGS;
 try {
-  // `sessionData` owns Chromium cookies/storage/cache. `userData` stays on the
-  // stable roaming path so changing the cache directory never logs accounts out.
+  // Persistent Chromium storage is independent of the user-selectable disk cache.
   app.setPath('cache', cacheSettings.chromiumPath);
-  app.setPath('sessionData', chromiumSessionDataPath(cacheSettings));
+  fs.mkdirSync(STABLE_SESSION_DATA_PATH, { recursive: true });
+  app.setPath('sessionData', STABLE_SESSION_DATA_PATH);
+  app.commandLine.appendSwitch('disk-cache-dir', CHROMIUM_DISK_CACHE_PATH);
   app.setPath('userData', STABLE_USER_DATA_PATH);
 } catch (error) {
   console.warn('[CacheSettings] Chromium cache path fallback:', error.message);
@@ -499,6 +510,14 @@ for (const [name, value, envName] of CHROMIUM_OPT_IN_PERFORMANCE_SWITCHES) {
   if (process.env[envName] === '1') appendChromiumSwitch(name, value);
 }
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (gotSingleInstanceLock) {
+  mainRendererOrigin = loadRendererOrigin(STABLE_USER_DATA_PATH);
+  migrateChromiumProfile(STABLE_SESSION_DATA_PATH, [
+    chromiumSessionDataPath(INITIAL_CACHE_SETTINGS),
+    chromiumSessionDataPath(readCacheSettings()),
+    STABLE_USER_DATA_PATH,
+  ]);
+}
 
 const QQ_LOGIN_COOKIE_PRIORITY = [
   'uin',
@@ -738,7 +757,7 @@ const LOCAL_APP_PERMISSION_ALLOWLIST = new Set(['speaker-selection', 'pointerLoc
 function isLocalAppUrl(value) {
   try {
     const u = new URL(String(value || ''));
-    return u.protocol === 'http:' && u.hostname === '127.0.0.1' && Number(u.port || 0) === Number(mainServerPort || 0);
+    return u.origin === mainRendererOrigin && !u.username && !u.password;
   } catch (e) {
     return false;
   }
@@ -767,14 +786,17 @@ function isTrustedMainWindowIpc(event) {
   }
 }
 
-function clearGestureCameraPermissionGrant() {
-  gestureCameraPermissionGrant = null;
+function clearGestureCameraPermissionGrant(grantId) {
+  if (!grantId || gestureCameraPermissionGrant && gestureCameraPermissionGrant.id === grantId) {
+    gestureCameraPermissionGrant = null;
+  }
 }
 
 function createGestureCameraPermissionGrant(event) {
   if (!isTrustedMainWindowIpc(event)) return null;
   const sourceUrl = event.senderFrame && event.senderFrame.url || event.sender.getURL();
   gestureCameraPermissionGrant = {
+    id: crypto.randomBytes(16).toString('hex'),
     webContentsId: event.sender.id,
     origin: sourceUrl,
     expiresAt: Date.now() + GESTURE_CAMERA_PERMISSION_GRANT_MS,
@@ -782,7 +804,7 @@ function createGestureCameraPermissionGrant(event) {
   return gestureCameraPermissionGrant;
 }
 
-function isTrustedGestureCameraMediaPermission(webContents, origin, details) {
+function isTrustedGestureCameraMediaPermission(webContents, origin, details, consume = false) {
   const grant = gestureCameraPermissionGrant;
   if (!grant || Date.now() > grant.expiresAt) {
     clearGestureCameraPermissionGrant();
@@ -798,8 +820,10 @@ function isTrustedGestureCameraMediaPermission(webContents, origin, details) {
       ? details.mediaTypes.map((value) => String(value || '').toLowerCase()).filter(Boolean)
       : [];
     if (mediaType.includes('audio') || mediaTypes.some((value) => value.includes('audio'))) return false;
-    if (mediaType && !mediaType.includes('video')) return false;
-    if (mediaTypes.length && !mediaTypes.every((value) => value.includes('video'))) return false;
+    if (mediaType && mediaType !== 'video') return false;
+    if (mediaTypes.length && !mediaTypes.every((value) => value === 'video')) return false;
+    if (consume && mediaType !== 'video' && !mediaTypes.includes('video')) return false;
+    if (consume) clearGestureCameraPermissionGrant(grant.id);
     return true;
   } catch (_) {
     return false;
@@ -1670,7 +1694,7 @@ function configureLocalAppPermissions() {
     }
     if (permission === 'media') {
       callback(isTrustedWallpaperEnginePreparationMediaPermission(webContents, origin, details)
-        || isTrustedGestureCameraMediaPermission(webContents, origin, details));
+        || isTrustedGestureCameraMediaPermission(webContents, origin, details, true));
       return;
     }
     callback(LOCAL_APP_PERMISSION_ALLOWLIST.has(permission) && isLocalAppUrl(origin));
@@ -3525,8 +3549,7 @@ function toggleFullscreen(win) {
 }
 
 function overlayUrl(page) {
-  const port = mainServerPort || process.env.PORT || 3000;
-  return `http://127.0.0.1:${port}/${page}`;
+  return `${mainRendererOrigin}/${page}`;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -3711,6 +3734,16 @@ function broadcastDesktopLyricsEnabledState(enabled) {
   }
 }
 
+function isTrustedDesktopLyricsIpc(event) {
+  if (isTrustedMainWindowIpc(event)) return true;
+  try {
+    if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed() || !event || event.sender !== desktopLyricsWindow.webContents) return false;
+    if (event.senderFrame && event.senderFrame.parent) return false;
+    const source = new URL(event.senderFrame && event.senderFrame.url || event.sender.getURL());
+    return isLocalAppUrl(source.href) && source.pathname === '/desktop-lyrics.html';
+  } catch (_) { return false; }
+}
+
 function positionDesktopLyricsWindow(payload = desktopLyricsState, options = {}) {
   if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) return;
   const shouldUseManualBounds = desktopLyricsUserBounds && !options.force;
@@ -3726,6 +3759,7 @@ function sendDesktopLyricsState() {
 }
 
 function createDesktopLyricsWindow(payload = {}) {
+  if (appQuitting || !desktopLyricsRequestedEnabled) return null;
   const previousY = desktopLyricsState.y;
   const previousOpacity = desktopLyricsState.opacity;
   desktopLyricsState = { ...desktopLyricsState, ...payload, enabled: true };
@@ -3793,8 +3827,11 @@ function createDesktopLyricsWindow(payload = {}) {
   return desktopLyricsWindow;
 }
 
-function closeDesktopLyricsWindow() {
-  desktopLyricsState = { ...desktopLyricsState, enabled: false };
+function closeDesktopLyricsWindow({ preservePreference = false } = {}) {
+  if (!preservePreference) {
+    desktopLyricsRequestedEnabled = false;
+    desktopLyricsState = { ...desktopLyricsState, enabled: false };
+  }
   desktopLyricsPointerCapture = false;
   desktopLyricsMouseIgnored = null;
   desktopLyricsHotBounds = null;
@@ -3804,7 +3841,7 @@ function closeDesktopLyricsWindow() {
     desktopLyricsWindow.close();
   }
   desktopLyricsWindow = null;
-  broadcastDesktopLyricsEnabledState(false);
+  if (!preservePreference) broadcastDesktopLyricsEnabledState(false);
 }
 
 function nativeWindowHandleDecimal(win) {
@@ -3925,7 +3962,7 @@ async function closeWallpaperWindow(reason = 'disabled') {
 }
 
 function closeOverlayWindows(reason = 'overlay-close') {
-  closeDesktopLyricsWindow();
+  closeDesktopLyricsWindow({ preservePreference: true });
   return closeWallpaperWindow(reason).catch((error) => {
     console.warn('[FullDesktopMode] close failed:', error && error.message || error);
   });
@@ -4609,9 +4646,9 @@ ipcMain.handle('mineradio-built-in-playlist-add-track', async (event, id, track)
   try { return await builtInPlaylistLibrary.addTrack(id, track); } catch (error) { return builtInPlaylistMutationError(error); }
 });
 
-ipcMain.handle('mineradio-built-in-playlist-remove-track', async (event, id, index) => {
+ipcMain.handle('mineradio-built-in-playlist-remove-track', async (event, id, identity) => {
   if (!isTrustedMainWindowIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
-  try { return await builtInPlaylistLibrary.removeTrack(id, index); } catch (error) { return builtInPlaylistMutationError(error); }
+  try { return await builtInPlaylistLibrary.removeTrack(id, identity); } catch (error) { return builtInPlaylistMutationError(error); }
 });
 
 ipcMain.handle('mineradio-built-in-playlist-reorder-track', async (event, id, fromIndex, toIndex) => {
@@ -4870,17 +4907,17 @@ ipcMain.handle('qishui-music-clear-login', async () => {
   return clearQishuiMusicLoginSession();
 });
 
-ipcMain.handle('mineradio-open-update-page', async (event, value) => {
+ipcMain.handle('mineradio-open-external-url', async (event, value) => {
   try {
     if (!isTrustedMainWindowIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
     const target = String(value || '').trim();
-    if (!target || target.length > 2048) return { ok: false, error: 'INVALID_UPDATE_URL' };
+    if (!target || target.length > 2048) return { ok: false, error: 'INVALID_EXTERNAL_URL' };
     const parsed = new URL(target);
-    if (parsed.protocol !== 'https:') return { ok: false, error: 'INVALID_UPDATE_URL' };
+    if (parsed.protocol !== 'https:') return { ok: false, error: 'INVALID_EXTERNAL_URL' };
     await shell.openExternal(parsed.href);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: e.message || 'OPEN_UPDATE_PAGE_FAILED' };
+    return { ok: false, error: e.message || 'OPEN_EXTERNAL_URL_FAILED' };
   }
 });
 
@@ -4894,8 +4931,11 @@ ipcMain.handle('mineradio-restart-app', async () => {
   }
 });
 
-ipcMain.handle('mineradio-desktop-lyrics-set-enabled', async (_event, enabled, payload) => {
+ipcMain.handle('mineradio-desktop-lyrics-set-enabled', async (event, enabled, payload) => {
   try {
+    if (!isTrustedDesktopLyricsIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
+    if (appQuitting) return { ok: false, error: 'APP_QUITTING' };
+    desktopLyricsRequestedEnabled = enabled === true;
     if (enabled) {
       createDesktopLyricsWindow(payload || {});
       broadcastDesktopLyricsEnabledState(true);
@@ -4908,11 +4948,13 @@ ipcMain.handle('mineradio-desktop-lyrics-set-enabled', async (_event, enabled, p
   }
 });
 
-ipcMain.handle('mineradio-desktop-lyrics-update', async (_event, payload) => {
+ipcMain.handle('mineradio-desktop-lyrics-update', async (event, payload) => {
   try {
-    const nextState = { ...desktopLyricsState, ...(payload || {}) };
-    if (nextState.enabled) {
-      createDesktopLyricsWindow(payload || {});
+    if (!isTrustedMainWindowIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
+    if (appQuitting) return { ok: true };
+    const nextState = { ...desktopLyricsState, ...(payload || {}), enabled: desktopLyricsRequestedEnabled };
+    if (desktopLyricsRequestedEnabled) {
+      createDesktopLyricsWindow(nextState);
     } else if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
       desktopLyricsState = nextState;
       sendDesktopLyricsState();
@@ -4995,7 +5037,13 @@ ipcMain.handle('mineradio-wallpaper-set-enabled', async (event, enabled, payload
 ipcMain.handle('mineradio-gesture-camera-request-permission', async (event) => {
   const grant = createGestureCameraPermissionGrant(event);
   if (!grant) return { ok: false, error: 'GESTURE_CAMERA_UNTRUSTED_SENDER' };
-  return { ok: true, expiresAt: grant.expiresAt };
+  return { ok: true, grantId: grant.id, expiresAt: grant.expiresAt };
+});
+
+ipcMain.handle('mineradio-gesture-camera-revoke-permission', async (event, grantId) => {
+  if (!isTrustedMainWindowIpc(event)) return { ok: false, error: 'GESTURE_CAMERA_UNTRUSTED_SENDER' };
+  if (typeof grantId === 'string' && grantId) clearGestureCameraPermissionGrant(grantId);
+  return { ok: true };
 });
 
 ipcMain.handle('mineradio-wallpaper-update', async (event) => {
@@ -5094,26 +5142,12 @@ function migrateMisplacedAppOwnedFiles() {
   try { addSource(app.getPath('sessionData')); } catch (_) {}
   addSource(chromiumSessionDataPath(cacheSettings));
 
-  fs.mkdirSync(STABLE_USER_DATA_PATH, { recursive: true });
-  APP_OWNED_MIGRATION_FILES.forEach((name) => {
-    const target = path.join(STABLE_USER_DATA_PATH, name);
-    let best = appOwnedMigrationFileValid(name, target)
-      ? { file: target, mtimeMs: fs.statSync(target).mtimeMs }
-      : null;
-    sources.forEach((sourceDir) => {
-      const candidate = path.join(sourceDir, name);
-      if (!appOwnedMigrationFileValid(name, candidate)) return;
-      const mtimeMs = fs.statSync(candidate).mtimeMs;
-      if (!best || mtimeMs > best.mtimeMs) best = { file: candidate, mtimeMs };
-    });
-    if (!best || path.resolve(best.file) === path.resolve(target)) return;
-    try {
-      fs.copyFileSync(best.file, target);
-      fs.utimesSync(target, new Date(), new Date(best.mtimeMs));
-      console.log('[UserDataMigration] restored', name);
-    } catch (error) {
-      console.warn('[UserDataMigration] skipped', name, error.message);
-    }
+  addSource(chromiumSessionDataPath(readCacheSettings()));
+  migrateAppOwnedFiles({
+    destination: STABLE_USER_DATA_PATH,
+    sources,
+    names: APP_OWNED_MIGRATION_FILES,
+    valid: appOwnedMigrationFileValid,
   });
 }
 
@@ -5139,6 +5173,10 @@ function removeDeprecatedKugouVipEvidenceFiles() {
 }
 
 function migrateLegacyAuthStorage() {
+  if (STARTUP_QA_USER_DATA_PATH) {
+    migrateMisplacedAppOwnedFiles();
+    return;
+  }
   removeDeprecatedKugouVipEvidenceFiles();
   migrateMisplacedAppOwnedFiles();
   try {
@@ -5257,6 +5295,15 @@ async function ensureLocalServerStarted() {
     localServer = require(serverModulePath);
     await waitForServer(localServer, STARTUP_SERVER_TIMEOUT_MS);
     await waitForLocalHttpReady(port, STARTUP_HTTP_TIMEOUT_MS);
+    if (!session.defaultSession._mineradioOriginConfigured) {
+      session.defaultSession.protocol.handle('http', createLocalProtocolHandler({
+        origin: mainRendererOrigin,
+        backendOrigin: () => mainServerPort ? `http://127.0.0.1:${mainServerPort}` : '',
+        tokenHeaders: () => localServer && typeof localServer.getLocalRequestHeaders === 'function' ? localServer.getLocalRequestHeaders() : {},
+        remoteFetch: (request) => session.defaultSession.fetch(request, { bypassCustomProtocolHandlers: true }),
+      }));
+      session.defaultSession._mineradioOriginConfigured = true;
+    }
     writeStartupState('server-ready', { serverReadyAt: Date.now(), port });
     return localServer;
   })().catch((error) => {
@@ -5528,8 +5575,7 @@ function recoverMainWindowAfterRendererGone(win, details = {}, cleanupPromise = 
 }
 
 async function loadMainWindowWithRetry(win) {
-  const port = mainServerPort || process.env.PORT || 3000;
-  const baseUrl = `http://127.0.0.1:${port}`;
+  const baseUrl = mainRendererOrigin;
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     if (!win || win.isDestroyed()) throw new Error('Main BrowserWindow was destroyed before navigation');
@@ -5644,12 +5690,14 @@ async function createWindowOnce() {
     if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(url).catch(() => {});
   });
   win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) clearGestureCameraPermissionGrant();
     if (!isMainFrame || isInPlace || !isTrustedMainDocumentUrl(url)) return;
     win.__mineradioTrustedMainDocumentReady = null;
     stopWallpaperEngineRuntimeForRenderer('main-frame-navigation');
     closeWallpaperWindow('main-frame-navigation').catch(() => {});
   });
   win.webContents.once('destroyed', () => {
+    clearGestureCameraPermissionGrant();
     stopWallpaperEngineRuntimeForRenderer('webcontents-destroyed');
     closeWallpaperWindow('webcontents-destroyed').catch(() => {});
   });
@@ -5665,6 +5713,7 @@ async function createWindowOnce() {
     console.warn('[StartupWindow] did-fail-load:', errorCode, errorDescription, validatedURL || '');
   });
   win.webContents.on('render-process-gone', (_event, details) => {
+    clearGestureCameraPermissionGrant();
     const cleanupPromise = Promise.allSettled([
       stopWallpaperEngineRuntimeForRenderer(`render-process-gone:${details && details.reason || 'unknown'}`),
       closeWallpaperWindow(`main-renderer-gone:${details && details.reason || 'unknown'}`),
@@ -5988,7 +6037,7 @@ if (!gotSingleInstanceLock) {
     stopMemoryAutoTimer();
     unregisterFullDesktopEscapeShortcut();
     unregisterMineradioGlobalHotkeys();
-    closeDesktopLyricsWindow();
+    closeDesktopLyricsWindow({ preservePreference: true });
     if (localServer && localServer.close) localServer.close();
     if (tray) {
       try { tray.destroy(); } catch (e) {}

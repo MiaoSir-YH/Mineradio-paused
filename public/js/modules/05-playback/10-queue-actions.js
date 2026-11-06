@@ -11,7 +11,7 @@ function queueSong(song, opts) {
         if (queueItemKey(playQueue[i]) === key) { existing = i; break; }
       }
     }
-    if (existing === currentIdx) return currentIdx;
+    if (existing >= 0 && existing === currentIdx) return currentIdx;
     if (existing >= 0) {
       cloned = playQueue.splice(existing, 1)[0];
       if (currentIdx >= 0 && existing < currentIdx) currentIdx -= 1;
@@ -32,19 +32,19 @@ function queueSongNext(song) {
 }
 function queueSearchResult(i) {
   var song = playlist[i]; if (!song) return;
-  queueSongNext(song);
+  if (queueSongNext(song) < 0) return;
   showToast('已设为下一首: ' + song.name);
 }
 function queueDetailSongNext(song) {
   if (!song || song.type === 'podcast-radio') return;
-  queueSongNext(song);
+  if (queueSongNext(song) < 0) return;
   showToast('已设为下一首: ' + (song.name || ''));
 }
 function queueIndexNext(i) {
   i = Number(i);
   if (!isFinite(i) || i < 0 || i >= playQueue.length) return;
   var song = playQueue[i];
-  queueSongNext(song);
+  if (queueSongNext(song) < 0) return;
   showToast('已设为下一首: ' + (song && song.name ? song.name : ''));
 }
 function openQueueArtist(i) {

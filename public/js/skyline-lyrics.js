@@ -378,6 +378,9 @@
   Skyline.prototype.clear = function () {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   };
+  Skyline.prototype.needsPausedFrame = function () {
+    return this.fadeIn < 1 || this.cloud.items.some(function (item) { return item.alive ? item.fade < 1 : item.fade > 0; });
+  };
   // t：歌曲时间（秒）；dt：画面经过的时间，暂停时传 0；theme：themeFromColors() 的结果；rate：播放倍速。
   Skyline.prototype.render = function (t, dt, theme, rate) {
     if (!this.fit()) return;
@@ -505,11 +508,21 @@
       c = c || {};
       return { unsung: c.primary, sung: c.highlight, glow: c.glow, cloud: c.secondary, spark: c.highlight };
     },
-    // 判断歌词有没有换的简短签名，用于决定要不要把整首歌词发给桌面歌词窗口。
+    // Fingerprint every displayed line and word while keeping the IPC key small.
     signature: function (lines) {
       if (!lines || !lines.length) return '';
-      var a = lines[0], b = lines[lines.length - 1];
-      return lines.length + '|' + a.t + '|' + b.t + '|' + String(a.text || '').slice(0, 16) + '|' + String(b.text || '').slice(0, 16);
+      var content = JSON.stringify(lines.map(function (line) {
+        return [line.t, line.duration, line.text, (line.words || []).map(function (word) {
+          return [word.text, word.t, word.d, word.c0, word.c1];
+        })];
+      }));
+      var forward = 0x811c9dc5;
+      var backward = 0x811c9dc5;
+      for (var i = 0; i < content.length; i++) {
+        forward = Math.imul(forward ^ content.charCodeAt(i), 0x01000193);
+        backward = Math.imul(backward ^ content.charCodeAt(content.length - 1 - i), 0x01000193);
+      }
+      return content.length + '|' + (forward >>> 0).toString(36) + '|' + (backward >>> 0).toString(36);
     }
   };
 })(window);

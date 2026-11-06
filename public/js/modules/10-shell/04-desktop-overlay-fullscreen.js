@@ -1043,6 +1043,18 @@ function desktopLyricsCustomFontPayload(includeDataUrl) {
   if (includeDataUrl !== false) payload.dataUrl = font.dataUrl;
   return payload;
 }
+var desktopSkylineSignatureState = { lines: null, key: '', checkedAt: 0 };
+function desktopSkylineSignature(force) {
+  var now = performance.now();
+  if (force || desktopSkylineSignatureState.lines !== lyricsLines || now - desktopSkylineSignatureState.checkedAt >= 3000) {
+    desktopSkylineSignatureState = {
+      lines: lyricsLines,
+      key: window.MineradioSkyline.signature(lyricsLines),
+      checkedAt: now
+    };
+  }
+  return desktopSkylineSignatureState.key;
+}
 function desktopLyricsPayload(forceBeatMap, includeCustomFontData) {
   var meta = currentDesktopSongMeta();
   var lyric = currentDesktopLyricSnapshot();
@@ -1077,7 +1089,7 @@ function desktopLyricsPayload(forceBeatMap, includeCustomFontData) {
   };
   // 天际屏：整首歌词只在换歌或每隔几秒时随 pushDesktopLyricsState 发送（skylineLines），平时只带签名。
   payload.skyline = !!(fx.lyricSkyline && lyricsLines && lyricsLines.length && window.MineradioSkyline);
-  payload.skylineKey = payload.skyline ? window.MineradioSkyline.signature(lyricsLines) : '';
+  payload.skylineKey = payload.skyline ? desktopSkylineSignature(!!forceBeatMap) : '';
   if (Object.prototype.hasOwnProperty.call(beatPayload, 'beatMap')) payload.beatMap = beatPayload.beatMap;
   return payload;
 }

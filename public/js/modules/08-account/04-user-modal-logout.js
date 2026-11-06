@@ -184,10 +184,10 @@ async function logoutAllAccountsAndResetEasterEgg() {
   }
   try {
     await Promise.allSettled([
-      apiJson('/api/logout'),
-      apiJson('/api/qq/logout'),
-      apiJson('/api/kugou/logout'),
-      apiJson('/api/qishui/logout')
+      apiJson('/api/logout', { method: 'POST' }),
+      apiJson('/api/qq/logout', { method: 'POST' }),
+      apiJson('/api/kugou/logout', { method: 'POST' }),
+      apiJson('/api/qishui/logout', { method: 'POST' })
     ]);
     var result = await requestLoginEasterEggReplayReset();
     if (!result || !result.ok || result.unlocked || result.resetComplete === false) {
@@ -223,7 +223,7 @@ async function logoutAllAccountsAndResetEasterEgg() {
 
 async function logoutActiveAccount() {
   if (activeAccountProvider === 'qishui') {
-    try { await apiJson('/api/qishui/logout'); } catch (e) { }
+    try { await apiJson('/api/qishui/logout', { method: 'POST' }); } catch (e) { }
     try {
       if (window.desktopWindow && typeof window.desktopWindow.clearQishuiMusicLogin === 'function') {
         await window.desktopWindow.clearQishuiMusicLogin();
@@ -243,7 +243,7 @@ async function logoutActiveAccount() {
     return;
   }
   if (activeAccountProvider === 'kugou') {
-    try { await apiJson('/api/kugou/logout'); } catch (e) { }
+    try { await apiJson('/api/kugou/logout', { method: 'POST' }); } catch (e) { }
     try {
       if (window.desktopWindow && typeof window.desktopWindow.clearKugouMusicLogin === 'function') {
         await window.desktopWindow.clearKugouMusicLogin();
@@ -262,7 +262,7 @@ async function logoutActiveAccount() {
     return;
   }
   if (activeAccountProvider === 'qq') {
-    try { await apiJson('/api/qq/logout'); } catch (e) { }
+    try { await apiJson('/api/qq/logout', { method: 'POST' }); } catch (e) { }
     try {
       if (window.desktopWindow && typeof window.desktopWindow.clearQQMusicLogin === 'function') {
         await window.desktopWindow.clearQQMusicLogin();
@@ -284,7 +284,7 @@ async function logoutActiveAccount() {
   doLogout();
 }
 async function doLogout() {
-  await apiJson('/api/logout');
+  await apiJson('/api/logout', { method: 'POST' });
   try {
     if (window.desktopWindow && typeof window.desktopWindow.clearNeteaseMusicLogin === 'function') {
       await window.desktopWindow.clearNeteaseMusicLogin();

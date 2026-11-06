@@ -11,9 +11,14 @@ function normalizeBuiltInPlaylistRows(rows) {
   }).filter(function (playlist) { return !!playlist.id; });
 }
 
+var builtInPlaylistSnapshotRevision = -1;
 function applyBuiltInPlaylistSnapshot(result, opts) {
   opts = opts || {};
   if (!result || result.ok !== true) return false;
+  if (Number.isFinite(result.revision)) {
+    if (result.revision < builtInPlaylistSnapshotRevision) return false;
+    builtInPlaylistSnapshotRevision = result.revision;
+  }
   builtInPlaylists = normalizeBuiltInPlaylistRows(result.playlists);
   if (typeof rebuildUserPlaylistsFromCatalog === 'function') {
     rebuildUserPlaylistsFromCatalog({
@@ -112,22 +117,62 @@ async function addTrackToBuiltInPlaylist(id, track, opts) {
   return result.duplicate ? 'duplicate' : true;
 }
 
-async function removeTrackFromBuiltInPlaylist(id, index) {
-  if (!builtInPlaylistApiAvailable() || typeof window.desktopWindow.removeBuiltInPlaylistTrack !== 'function') return false;
-  var result = await window.desktopWindow.removeBuiltInPlaylistTrack(String(id || ''), Number(index));
-  if (!result || result.ok !== true) {
-    if (typeof showToast === 'function') showToast(builtInPlaylistErrorMessage(result, '移除歌曲失败'));
+async function removeTrackFromBuiltInPlaylist(id, identity) {
+  if (!identity || !builtInPlaylistApiAvailable() || typeof window.desktopWindow.removeBuiltInPlaylistTrack !== 'function') return false;
+  var key = 'mineradio:' + String(id || '');
+  var detail = playlistPanelDetailState;
+  if (detail.key === key) {
+    cancelPlaylistPanelDetailRequest();
+    detail.token++;
+    detail.loadingMore = false;
+    detail.pendingRemovals = (detail.pendingRemovals || 0) + 1;
+  } else {
+    detail = null;
+  }
+  try {
+    var result = await window.desktopWindow.removeBuiltInPlaylistTrack(String(id || ''), identity);
+    if (!result || result.ok !== true) {
+      if (typeof showToast === 'function') showToast(builtInPlaylistErrorMessage(result, '移除歌曲失败'));
+      return false;
+    }
+    var currentDetail = playlistPanelDetailState;
+    var newer = !Number.isFinite(currentDetail.builtInRevision) || result.revision >= currentDetail.builtInRevision;
+    var detailReopened = currentDetail.key === key && currentDetail !== detail && newer;
+    if (currentDetail.key === key) {
+      if (newer) {
+        currentDetail.builtInRevision = result.revision;
+        currentDetail.playlist = result.playlist;
+        currentDetail.total = Math.max(0, Number(result.playlist.trackCount) || 0);
+        currentDetail.error = '';
+      }
+      if (detailReopened) {
+        cancelPlaylistPanelDetailRequest();
+        currentDetail.token++;
+        currentDetail.tracks = [];
+        currentDetail.nextOffset = 0;
+        currentDetail.loading = true;
+        currentDetail.loadingMore = false;
+      } else if (currentDetail === detail) {
+        var index = currentDetail.tracks.findIndex(function (track) { return track.builtInIdentity === identity; });
+        if (index >= 0) {
+          currentDetail.tracks.splice(index, 1);
+          currentDetail.nextOffset = Math.max(0, currentDetail.nextOffset - 1);
+        }
+      }
+      currentDetail.hasMore = currentDetail.nextOffset < currentDetail.total;
+    }
+    var rendered = applyBuiltInPlaylistSnapshot(result, { preserveScroll: true, reason: 'built-in-playlist-remove-track' });
+    if (!rendered && currentDetail.key === key) renderPlaylistPanelDetailRows();
+    if (detailReopened) loadMorePlaylistPanelDetailTracks('initial');
+    if (typeof showToast === 'function') showToast('已从内置歌单移除');
+    return true;
+  } catch (error) {
+    console.warn('[BuiltInPlaylistRemove]', error);
+    if (typeof showToast === 'function') showToast('移除歌曲失败');
     return false;
+  } finally {
+    if (detail) detail.pendingRemovals--;
   }
-  if (playlistPanelDetailState && playlistPanelDetailState.key === 'mineradio:' + String(id || '')) {
-    playlistPanelDetailState.tracks.splice(Number(index), 1);
-    playlistPanelDetailState.total = Math.max(0, playlistPanelDetailState.tracks.length);
-    playlistPanelDetailState.nextOffset = playlistPanelDetailState.tracks.length;
-    playlistPanelDetailState.hasMore = false;
-  }
-  applyBuiltInPlaylistSnapshot(result, { preserveScroll: true, reason: 'built-in-playlist-remove-track' });
-  if (typeof showToast === 'function') showToast('已从内置歌单移除');
-  return true;
 }
 
 async function renameBuiltInPlaylist(id, currentName) {

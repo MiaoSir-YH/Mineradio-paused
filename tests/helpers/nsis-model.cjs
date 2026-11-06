@@ -3,7 +3,7 @@
 // It does not replace a Windows installer integration test.
 const fs = require('node:fs');
 const path = require('node:path');
-module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files = {}, registry = {}, reparse = [] } = {}) {
+module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files = {}, registry = {}, reparse = [], defines: defineOverrides = {}, silent = false } = {}) {
   const functions = new Map(), variables = {}, stack = [], handles = new Map(), removed = [];
   const normalize = value => path.win32.normalize(value).toLowerCase();
   const entries = new Map(Object.entries(files).map(([key, value]) => [normalize(key), value]));
@@ -15,13 +15,14 @@ module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files 
   for (const file of ['installer.nsh', 'uninstall-manifest.nsh']) {
     const lines = fs.readFileSync(path.join(__dirname, '../../build', file), 'utf8').split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
-      const match = /^Function (\S+)/.exec(lines[i]); if (!match) continue;
+      const match = /^(Function|!macro) (\S+)/.exec(lines[i]); if (!match) continue;
       const body = [];
-      for (i++; i < lines.length && lines[i].trim() !== 'FunctionEnd'; i++) body.push(lines[i].trim());
-      functions.set(match[1], body);
+      const end = match[1] === 'Function' ? 'FunctionEnd' : '!macroend';
+      for (i++; i < lines.length && lines[i].trim() !== end; i++) body.push(lines[i].trim());
+      functions.set(match[1] === 'Function' ? match[2] : 'macro:' + match[2], body);
     }
   }
-  const defines = { MINERADIO_INSTALL_DIR_NAME: 'Mineradio', MINERADIO_INSTALL_DIR_NAME_LOWER: 'mineradio', MINERADIO_INSTALL_MARKER: '.mineradio-install-root', MINERADIO_MARKER_APP_ID: 'com.mineradio.desktop', PRODUCT_FILENAME: 'Mineradio', APP_GUID: 'app-guid', UNINSTALL_APP_KEY: 'uninstall-key' };
+  const defines = { MINERADIO_INSTALL_DIR_NAME: 'Mineradio', MINERADIO_INSTALL_DIR_NAME_LOWER: 'mineradio', MINERADIO_INSTALL_MARKER: '.mineradio-install-root', MINERADIO_MARKER_APP_ID: 'com.mineradio.desktop', PRODUCT_FILENAME: 'Mineradio', APP_GUID: 'app-guid', UNINSTALL_APP_KEY: 'uninstall-key', ...defineOverrides };
   variables.$INSTDIR = installDir;
   let errors = false, nextHandle = 1;
   const tokens = line => line.match(/"[^"]*"|'[^']*'|\S+/g) || [];
@@ -29,6 +30,7 @@ module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files 
     .replace(/\$\\r/g, '\r').replace(/\$\\n/g, '\n').replace(/\$(?:R\d|\d|INSTDIR\b)/g, key => variables[key] ?? '');
   function condition(line) {
     if (line === '${Errors}') return errors;
+    if (line === '${Silent}') return silent;
     const [a, op, b] = tokens(line), left = value(a), right = value(b);
     if (op === '==') return left.toLowerCase() === right.toLowerCase();
     if (op === '!=') return left.toLowerCase() !== right.toLowerCase();
@@ -39,7 +41,7 @@ module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files 
   function boundary(body, from, includeElse) {
     let depth = 0;
     for (let i = from + 1; i < body.length; i++) {
-      if (body[i].startsWith('${If}')) depth++;
+      if (/^\$\{If(?:Not)?\}/.test(body[i])) depth++;
       if (body[i] === '${EndIf}') { if (!depth) return i; depth--; }
       if (includeElse && !depth && (body[i] === '${Else}' || body[i].startsWith('${ElseIf}'))) return i;
     }
@@ -55,14 +57,15 @@ module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files 
     let steps = 0;
     for (let ip = 0; ip < body.length; ip++) {
       if (++steps > 50000) throw new Error('NSIS symbolic loop in ' + name);
-      const line = body[ip]; if (!line || line.startsWith(';') || line.endsWith(':')) continue;
+      const line = body[ip]; if (!line || line.startsWith(';') || line.startsWith('!') || line.endsWith(':')) continue;
       const jump = target => {
         if (!target || target === '0') return;
         if (/^[+-]\d+$/.test(target)) { ip += Number(target) - 1; return; }
         ip = body.indexOf(target + ':'); if (ip < 0) throw new Error('Unknown NSIS label ' + target);
       };
-      if (/^\$\{(?:If|ElseIf)\}/.test(line)) {
-        let pass = condition(line.replace(/^\$\{(?:If|ElseIf)\}\s+/, ''));
+      if (/^\$\{(?:If|IfNot|ElseIf)\}/.test(line)) {
+        let pass = condition(line.replace(/^\$\{(?:If|IfNot|ElseIf)\}\s+/, ''));
+        if (line.startsWith('${IfNot}')) pass = !pass;
         while (/^\$\{(?:AndIf|OrIf)\}/.test(body[ip + 1] || '')) {
           const next = body[++ip], result = condition(next.replace(/^\$\{(?:AndIf|OrIf)\}\s+/, ''));
           pass = next.startsWith('${AndIf}') ? pass && result : pass || result;
@@ -87,8 +90,10 @@ module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files 
       else if (op === 'Return') return;
       else if (op === 'Goto') jump(t[1]);
       else if (op === 'StrCmp') jump(value(t[1]).toLowerCase() === value(t[2]).toLowerCase() ? t[3] : t[4]);
+      else if (op === 'StrCmpS') jump(value(t[1]) === value(t[2]) ? t[3] : t[4]);
       else if (op === 'IfFileExists') jump(exists(value(t[1])) ? t[2] : t[3]);
       else if (op === 'ReadRegStr') variables[t[1]] = registry[[t[2], value(t[3]), value(t[4])].join('|')] || '';
+      else if (op === 'DeleteRegKey') { const prefix = [t[1], value(t[2]), ''].join('|'); for (const key of Object.keys(registry)) if (key.startsWith(prefix)) delete registry[key]; }
       else if (op === 'GetFullPathName') variables[t[1]] = path.win32.resolve(value(t[2]));
       else if (op === '${GetParent}') variables[t[2]] = path.win32.dirname(value(t[1]));
       else if (op === 'System::Call' && line.includes('GetFileAttributesW')) { const file = value('$4'); variables.$5 = reparses.has(normalize(file)) ? '1024' : exists(file) ? '0' : '-1'; }
@@ -97,18 +102,22 @@ module.exports = function nsisModel({ installDir = 'E:\\Apps\\Mineradio', files 
         const file = normalize(value(t[2])); errors = !entries.has(file);
         const handle = String(nextHandle++); variables[t[1]] = handle;
         if (!errors) handles.set(handle, { lines: String(entries.get(file)).match(/[^\n]*\n|[^\n]+$/g) || [], offset: 0 });
-      } else if (op === 'FileReadUTF16LE') {
+      } else if (op === 'FileReadUTF16LE' || op === 'FileRead') {
         const handle = handles.get(value(t[1])); errors = !handle || handle.offset >= handle.lines.length;
         variables[t[2]] = errors ? '' : handle.lines[handle.offset++];
-      } else if (op === 'FileClose') handles.delete(value(t[1]));
+      } else if (op === 'FileSeek' && t[2] === '0' && t[3] === 'SET') handles.get(value(t[1])).offset = 0;
+      else if (op === 'FileClose') handles.delete(value(t[1]));
       else if (op === 'Delete') { const file = normalize(value(t[1])); removed.push(file); entries.delete(file); }
       else if (op === 'RMDir') {
         const dir = normalize(value(t[1]));
         if (![...entries.keys(), ...directories].some(file => file !== dir && file.startsWith(dir + '\\'))) { removed.push(dir); directories.delete(dir); }
-      } else if (op === 'SetOutPath' || op === 'DetailPrint') { /* No state needed. */ }
+      } else if (op === '${GetParameters}') variables[t[1]] = '';
+      else if (op === '${GetOptions}') { errors = true; variables[t[3]] = ''; }
+      else if (op === 'SetOutPath' || op === 'DetailPrint' || op === 'MessageBox' || op === 'SetErrorLevel') { /* No state needed. */ }
+      else if (op === 'Abort' || op === 'Quit') throw new Error('NSIS ' + op);
       else throw new Error('Unsupported NSIS instruction: ' + line);
     }
   }
-  return { variables, stack, entries, directories, removed, invoke,
+  return { variables, stack, entries, directories, removed, registry, invoke,
     call(name, argument) { stack.push(argument); invoke(name); return stack.pop(); } };
 };

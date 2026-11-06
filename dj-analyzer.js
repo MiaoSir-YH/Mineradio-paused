@@ -1,5 +1,6 @@
 const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const FULL_STREAM_QUALITY_LIMIT_SEC = 7200;
+const { fetchPublicMedia } = require('./desktop/media-http');
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -442,16 +443,17 @@ async function decodePodcastDjEnergyRange(audioUrl, opts) {
     }
   }
 
+  let reader;
   try {
     const headers = {
       'User-Agent': opts.userAgent || DEFAULT_UA,
       'Referer': 'https://music.163.com/',
     };
     if (opts.range) headers.Range = opts.range;
-    const resp = await fetch(audioUrl, { headers });
+    const resp = await fetchPublicMedia(audioUrl, { headers });
     if (!resp.ok && resp.status !== 206) throw new Error('Audio fetch failed: ' + resp.status);
     if (!resp.body) throw new Error('Audio response has no body');
-    const reader = resp.body.getReader();
+    reader = resp.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -467,6 +469,7 @@ async function decodePodcastDjEnergyRange(audioUrl, opts) {
     processDecoded(decoder.decode(new Uint8Array(0)));
     if (frameCount > 0) pushFrame();
   } finally {
+    if (reader) { try { await reader.cancel(); } catch (_) {} }
     decoder.free();
   }
 
@@ -524,7 +527,7 @@ async function analyzePodcastDjRangeSamples(audioUrl, opts) {
 
   let contentLength = 0;
   try {
-    const head = await fetch(audioUrl, {
+    const head = await fetchPublicMedia(audioUrl, {
       method: 'HEAD',
       headers: {
         'User-Agent': opts.userAgent || DEFAULT_UA,
@@ -817,15 +820,16 @@ async function analyzePodcastDjStreamFull(audioUrl, opts) {
     }
   }
 
+  let reader;
   try {
-    const resp = await fetch(audioUrl, {
+    const resp = await fetchPublicMedia(audioUrl, {
       headers: {
         'User-Agent': opts.userAgent || DEFAULT_UA,
         'Referer': 'https://music.163.com/',
       },
     });
     if (!resp.ok || !resp.body) throw new Error('Audio fetch failed: ' + resp.status);
-    const reader = resp.body.getReader();
+    reader = resp.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -838,6 +842,7 @@ async function analyzePodcastDjStreamFull(audioUrl, opts) {
     processDecoded(tail);
     if (frameCount > 0) pushFrame();
   } finally {
+    if (reader) { try { await reader.cancel(); } catch (_) {} }
     decoder.free();
   }
 

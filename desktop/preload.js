@@ -48,7 +48,7 @@ contextBridge.exposeInMainWorld('desktopWindow', {
   renameBuiltInPlaylist: (id, name) => ipcRenderer.invoke('mineradio-built-in-playlist-rename', String(id || ''), String(name || '')),
   deleteBuiltInPlaylist: (id) => ipcRenderer.invoke('mineradio-built-in-playlist-delete', String(id || '')),
   addBuiltInPlaylistTrack: (id, track) => ipcRenderer.invoke('mineradio-built-in-playlist-add-track', String(id || ''), track || {}),
-  removeBuiltInPlaylistTrack: (id, index) => ipcRenderer.invoke('mineradio-built-in-playlist-remove-track', String(id || ''), Number(index)),
+  removeBuiltInPlaylistTrack: (id, identity) => ipcRenderer.invoke('mineradio-built-in-playlist-remove-track', String(id || ''), String(identity || '')),
   reorderBuiltInPlaylistTrack: (id, fromIndex, toIndex) => ipcRenderer.invoke('mineradio-built-in-playlist-reorder-track', String(id || ''), Number(fromIndex), Number(toIndex)),
   importLocalMusicFiles: async (files) => {
     const entries = [];
@@ -83,7 +83,7 @@ contextBridge.exposeInMainWorld('desktopWindow', {
   openKugouMusicLogin: (options) => ipcRenderer.invoke('kugou-music-open-login', options || {}),
   clearKugouMusicLogin: () => ipcRenderer.invoke('kugou-music-clear-login'),
   clearQishuiMusicLogin: () => ipcRenderer.invoke('qishui-music-clear-login'),
-  openUpdatePage: (url) => ipcRenderer.invoke('mineradio-open-update-page', String(url || '')),
+  openExternalUrl: (url) => ipcRenderer.invoke('mineradio-open-external-url', String(url || '')),
   restartApp: () => ipcRenderer.invoke('mineradio-restart-app'),
   configureGlobalHotkeys: (bindings) => ipcRenderer.invoke('mineradio-hotkeys-configure-global', bindings || []),
   copyText: (text) => {
@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld('desktopWindow', {
   updateWallpaperMode: (payload) => ipcRenderer.invoke('mineradio-wallpaper-update', payload || {}),
   getWallpaperModeStatus: () => ipcRenderer.invoke('mineradio-wallpaper-get-status'),
   requestGestureCameraPermission: () => ipcRenderer.invoke('mineradio-gesture-camera-request-permission'),
+  revokeGestureCameraPermission: (grantId) => ipcRenderer.invoke('mineradio-gesture-camera-revoke-permission', String(grantId || '')),
   updateDesktopIconShields: (payload) => ipcRenderer.send('mineradio-full-desktop-icon-shields', payload || {}),
   setDesktopSoftwareLocked: (locked) => ipcRenderer.invoke('mineradio-full-desktop-set-software-lock', locked === true),
   setDesktopIconsVisible: (visible) => ipcRenderer.invoke('mineradio-full-desktop-set-icons-visible', visible !== false),

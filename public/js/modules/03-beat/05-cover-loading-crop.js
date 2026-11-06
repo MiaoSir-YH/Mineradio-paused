@@ -163,20 +163,25 @@ function commitCustomCoverCanvas(cv, opts) {
   var out = document.createElement('canvas');
   out.width = out.height = 512;
   out.getContext('2d').drawImage(cv, 0, 0, 512, 512);
-  setCustomCoverForCurrent(coverCanvasToDataUrl(out), opts);
+  setCustomCoverForSong(opts.targetSong, coverCanvasToDataUrl(out), opts);
 }
 
+var coverFileRequestSerial = 0;
 function loadCoverFromFile(file, opts) {
+  opts = Object.assign({ targetSong: currentCoverSong() }, opts);
+  var request = ++coverFileRequestSerial;
   var reader = new FileReader();
   reader.onload = function (e) {
+    if (request !== coverFileRequestSerial) return;
     var img = new Image();
     img.onload = function () {
+      if (request !== coverFileRequestSerial) return;
       var iw = img.naturalWidth || img.width;
       var ih = img.naturalHeight || img.height;
       if (Math.abs(iw - ih) <= 1) {
         commitCustomCoverCanvas(makeSquareCoverCanvas(img, 512), opts);
       } else {
-        openCoverCropModal(img, e.target.result);
+        openCoverCropModal(img, e.target.result, opts);
       }
     };
     img.src = e.target.result;
@@ -234,7 +239,7 @@ function bindCoverCropModal() {
   });
 }
 
-function openCoverCropModal(img, dataUrl) {
+function openCoverCropModal(img, dataUrl, opts) {
   bindCoverCropModal();
   var modal = document.getElementById('cover-crop-modal');
   var stage = document.getElementById('cover-crop-stage');
@@ -243,9 +248,10 @@ function openCoverCropModal(img, dataUrl) {
   if (!modal || !stage || !imgEl || !zoom) return;
   imgEl.src = dataUrl;
   zoom.value = '1';
-  coverCropState = {
+  var state = coverCropState = {
     img: img,
     dataUrl: dataUrl,
+    options: opts,
     naturalW: img.naturalWidth || img.width,
     naturalH: img.naturalHeight || img.height,
     stageSize: 0,
@@ -259,6 +265,7 @@ function openCoverCropModal(img, dataUrl) {
   };
   openGsapModal(modal);
   requestAnimationFrame(function () {
+    if (coverCropState !== state) return;
     initCoverCropGeometry();
     pulseCoverCropStage();
   });
@@ -333,7 +340,9 @@ function pulseCoverCropStage() {
 
 function closeCoverCropModal() {
   var modal = document.getElementById('cover-crop-modal');
+  var state = coverCropState;
   closeGsapModal(modal, function () {
+    if (coverCropState !== state) return;
     var imgEl = document.getElementById('cover-crop-img');
     if (imgEl) imgEl.removeAttribute('src');
     coverCropState = null;
@@ -345,7 +354,7 @@ function commitCoverCrop() {
   var crop = currentCoverCropRect();
   if (!crop) return;
   var cv = makeSquareCoverCanvas(coverCropState.img, 512, crop);
-  commitCustomCoverCanvas(cv);
+  commitCustomCoverCanvas(cv, coverCropState.options);
   closeCoverCropModal();
 }
 

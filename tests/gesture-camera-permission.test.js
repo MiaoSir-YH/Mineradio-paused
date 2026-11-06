@@ -11,7 +11,7 @@ const gestureText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules'
 
 assert.match(mainText, /const\s+GESTURE_CAMERA_PERMISSION_GRANT_MS\s*=\s*45000;/);
 assert.match(mainText, /function\s+createGestureCameraPermissionGrant\s*\(event\)/);
-assert.match(mainText, /function\s+isTrustedGestureCameraMediaPermission\s*\(webContents,\s*origin,\s*details\)/);
+assert.match(mainText, /function\s+isTrustedGestureCameraMediaPermission\s*\(webContents,\s*origin,\s*details,\s*consume = false\)/);
 assert.match(mainText, /webContents\s*!==\s*mainWindow\.webContents/);
 assert.match(mainText, /mediaType\.includes\('audio'\)/);
 assert.match(mainText, /permission\s*===\s*'media'[\s\S]{0,220}isTrustedGestureCameraMediaPermission\(webContents,\s*origin,\s*details\)/);

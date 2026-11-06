@@ -1519,8 +1519,8 @@ function checkPersistentCacheStorageGuard() {
   const cssText = fs.readFileSync(path.join(appRoot, 'public', 'css', 'index.css'), 'utf8');
   const setNameAt = mainText.indexOf('app.setName(APP_NAME)');
   const firstUserDataLookupAt = mainText.indexOf("app.getPath('appData')");
-  if (!/const CACHE_SETTINGS_FILE/.test(mainText) || !/const LYRIC_CACHE_MAX_BYTES = 96 \* 1024 \* 1024/.test(mainText) || !/function defaultCacheRootPath\(\)/.test(mainText) || !/path\.join\(dDrive, 'MineradioCache'\)/.test(mainText) || setNameAt < 0 || firstUserDataLookupAt < 0 || setNameAt > firstUserDataLookupAt || !/const STABLE_USER_DATA_PATH = STARTUP_QA_USER_DATA_PATH \|\| path\.join\(app\.getPath\('appData'\), APP_NAME\)/.test(mainText) || !/app\.setPath\('userData', STABLE_USER_DATA_PATH\)/.test(mainText) || !/app\.setPath\('sessionData', chromiumSessionDataPath\(cacheSettings\)\)/.test(mainText) || !/const currentChromiumPath = app\.getPath\('sessionData'\)/.test(mainText) || !/MINERADIO_BEAT_CACHE_DIR = cacheSettings\.beatmapsPath/.test(mainText) || !/nativePath:\s*path\.join\(rootPath, 'native-helper-temp'\)/.test(mainText) || !/const NATIVE_HELPER_TEMP_PATH = INITIAL_CACHE_SETTINGS\.nativePath/.test(mainText) || !/activeWallpaperEnginePath/.test(mainText) || !/wallpaperEngineBytes/.test(mainText)) {
-    fail('desktop cache settings must keep app-owned userData stable and route Chromium sessionData plus beatmaps to the configurable cache root');
+  if (!/const CACHE_SETTINGS_FILE/.test(mainText) || !/const LYRIC_CACHE_MAX_BYTES = 96 \* 1024 \* 1024/.test(mainText) || !/function defaultCacheRootPath\(\)/.test(mainText) || !/path\.join\(dDrive, 'MineradioCache'\)/.test(mainText) || setNameAt < 0 || firstUserDataLookupAt < 0 || setNameAt > firstUserDataLookupAt || !/const STABLE_USER_DATA_PATH = STARTUP_QA_USER_DATA_PATH \|\| path\.join\(app\.getPath\('appData'\), APP_NAME\)/.test(mainText) || !/app\.setPath\('userData', STABLE_USER_DATA_PATH\)/.test(mainText) || !/app\.setPath\('sessionData', STABLE_SESSION_DATA_PATH\)/.test(mainText) || !/appendSwitch\('disk-cache-dir', CHROMIUM_DISK_CACHE_PATH\)/.test(mainText) || !/const currentChromiumPath = CHROMIUM_DISK_CACHE_PATH/.test(mainText) || !/migrateChromiumProfile\(STABLE_SESSION_DATA_PATH/.test(mainText) || !/MINERADIO_BEAT_CACHE_DIR = cacheSettings\.beatmapsPath/.test(mainText) || !/nativePath:\s*path\.join\(rootPath, 'native-helper-temp'\)/.test(mainText) || !/const NATIVE_HELPER_TEMP_PATH = INITIAL_CACHE_SETTINGS\.nativePath/.test(mainText) || !/activeWallpaperEnginePath/.test(mainText) || !/wallpaperEngineBytes/.test(mainText)) {
+    fail('desktop cache settings must preserve Chromium sessionData and app userData while moving only disk cache, beatmaps and native caches');
   }
   if (!/function migrateMisplacedAppOwnedFiles\(\)/.test(mainText) || !/APP_OWNED_MIGRATION_FILES/.test(mainText) || !/process\.env\.QISHUI_COOKIE_FILE = path\.join\(STABLE_USER_DATA_PATH, '\.qishui-cookie'\)/.test(mainText) || !/process\.env\.SPOTIFY_TOKEN_FILE = path\.join\(STABLE_USER_DATA_PATH, '\.spotify-token\.json'\)/.test(mainText)) {
     fail('provider credentials must migrate out of the old Chromium cache path and remain under stable userData');
@@ -1541,55 +1541,21 @@ function checkPersistentCacheStorageGuard() {
   console.log('[OK] Persistent lyric and application cache paths are configurable and report current usage.');
 }
 
-function checkExternalUpdatePageBridgeGuard() {
-  logStep('External update page bridge guard');
+function checkForkUpdateChannelGuard() {
+  logStep('Fork update channel guard');
   const regression = spawnSync(process.execPath, ['--test',
+    path.join(appRoot, 'tests', 'external-update-page-bridge.test.js'),
     path.join(appRoot, 'tests', 'update-external-only.test.js'),
-    path.join(appRoot, 'tests', 'update-download-link-rotation.test.js')
+    path.join(appRoot, 'tests', 'fork-update-ui.test.js'),
+    path.join(appRoot, 'tests', 'fork-update-channel.test.js')
   ], { cwd: appRoot, encoding: 'utf8' });
   if (regression.status !== 0) {
     process.stdout.write(regression.stdout || '');
     process.stderr.write(regression.stderr || '');
-    fail('external update link rotation regression failed');
+    fail('fork update channel regression failed');
   }
   process.stdout.write(regression.stdout || '');
-  const mainText = fs.readFileSync(path.join(appRoot, 'desktop', 'main.js'), 'utf8');
-  const preloadText = fs.readFileSync(path.join(appRoot, 'desktop', 'preload.js'), 'utf8');
-  const serverText = fs.readFileSync(path.join(appRoot, 'server.js'), 'utf8');
-  const updateUiText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '08-account', '00-update-preview.js'), 'utf8');
-  const bridgeText = mainText + '\n' + preloadText;
-  if (
-    !/ipcMain\.handle\('mineradio-open-update-page', async \(event, value\) =>/.test(mainText)
-    || !/isTrustedMainWindowIpc\(event\)/.test(mainText)
-    || !/target\.length > 2048/.test(mainText)
-    || !/parsed\.protocol !== 'https:'/.test(mainText)
-    || !/await shell\.openExternal\(parsed\.href\)/.test(mainText)
-    || !/openUpdatePage: \(url\) => ipcRenderer\.invoke\('mineradio-open-update-page'/.test(preloadText)
-  ) {
-    fail('desktop update bridge must open only bounded HTTPS pages from the trusted main document');
-  }
-  if (/mineradio-open-update-installer|openUpdateInstaller|getUpdateDownloadDir|MINERADIO_UPDATE_DIR/.test(bridgeText)) {
-    fail('desktop update bridge must not expose the removed local installer or update-cache path');
-  }
-  if (
-    !/mineradio-download-page/.test(serverText)
-    || !/extractReleaseDownloadPages/.test(serverText)
-    || !/downloadPages/.test(serverText)
-    || !/error:\s*'UPDATE_EXTERNAL_ONLY'/.test(serverText)
-    || !/openUpdateDownloadSource/.test(updateUiText)
-    || !/update-download-source/.test(updateUiText)
-    || !/desktopWindow\.openUpdatePage\(target\)/.test(updateUiText)
-    || !/软件不会在本地下载或应用补丁/.test(updateUiText)
-  ) {
-    fail('updates must resolve to an external download page and keep legacy local routes disabled');
-  }
-  if (
-    /startUpdateDownloadJob|startUpdatePatchJob|updateDownloadJobs|UPDATE_DOWNLOAD_DIR|pickPatchAsset/.test(serverText)
-    || /\/api\/update\/(?:download|patch)|openUpdateInstaller|快速补丁/.test(updateUiText)
-  ) {
-    fail('local installer download and quick-patch workers must remain removed');
-  }
-  console.log('[OK] Updates use a trusted HTTPS-only external-page bridge with no local installer path.');
+  console.log('[OK] The update entry uses only this fork’s GitHub Releases.');
 }
 
 function checkLyricTranslationCompletenessGuard() {
@@ -1714,7 +1680,7 @@ function checkQishuiProviderGuard() {
       !/\}, qishuiCookie\)/.test(qishuiSongRouteText)) {
     fail('server.js must pass the saved Qishui cookie into /api/qishui/song/url');
   }
-  if (!/TrackDecryptor/.test(serverText) || !/qishui-audio-decryptor/.test(serverText) || !/function getQishuiDecryptedAudio/.test(serverText) || !/audioUrl\.includes\('#auth='\)/.test(serverText) || !/sendAudioBuffer/.test(serverText)) {
+  if (!/TrackDecryptor/.test(serverText) || !/qishui-audio-decryptor/.test(serverText) || !/function getQishuiDecryptedAudio/.test(serverText) || !/(?:audioUrl|mediaUrl)\.includes\('#auth='\)/.test(serverText) || !/sendAudioBuffer/.test(serverText)) {
     fail('Qishui encrypted #auth audio must be decrypted by /api/audio with Range support');
   }
   if (!/function handleQishuiUserPlaylists/.test(qishuiText) || !/function handleQishuiPlaylistTracks/.test(qishuiText) || !/QISHUI_VIRTUAL_FEED_PLAYLIST_ID/.test(qishuiText) || !/userPlaylists: configured/.test(qishuiText)) {
@@ -2072,10 +2038,11 @@ async function checkProviderFallbackTerminalStateGuard() {
   const beatPrefetchText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '03-beat', '00-tempo-worker-cache-prefetch.js'), 'utf8');
   const controlsText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '05-playback', '14-player-controls.js'), 'utf8');
   const serverText = fs.readFileSync(path.join(appRoot, 'server.js'), 'utf8');
+  const mediaTransportText = fs.readFileSync(path.join(appRoot, 'desktop', 'media-http.js'), 'utf8');
   if (!/function sourceFallbackProviderReady/.test(fallbackText) || !/status\.playbackKeyReady === true/.test(fallbackText) || !/function alternatePlaybackProviders/.test(fallbackText) || /if \(provider === 'netease'\) return 'qq'/.test(fallbackText)) {
     fail('automatic fallback must only select logged-in direct providers with complete playback authorization');
   }
-  if (!/SOURCE_FALLBACK_SEARCH_TIMEOUT_MS\s*=\s*6500/.test(fallbackText) || !/apiJson\(url, \{ timeoutMs: SOURCE_FALLBACK_SEARCH_TIMEOUT_MS \}\)/.test(fallbackText) || !/SOURCE_FALLBACK_RECOVERY_TIMEOUT_MS\s*=\s*20000/.test(fallbackText) || !/function awaitSourceFallbackBudget/.test(fallbackText) || (playbackText.match(/timeoutMs:\s*9000/g) || []).length < 2 || (playbackText.match(/timeoutMs:\s*14000/g) || []).length < 2 || (playbackText.match(/timeoutMs:\s*15000/g) || []).length < 4 || (playbackText.match(/timeoutMs:\s*20000/g) || []).length < 2) {
+  if (!/SOURCE_FALLBACK_SEARCH_TIMEOUT_MS\s*=\s*6500/.test(fallbackText) || !/apiJson\(url, \{ timeoutMs: Math\.min\(SOURCE_FALLBACK_SEARCH_TIMEOUT_MS, opts\.timeoutMs \|\| SOURCE_FALLBACK_SEARCH_TIMEOUT_MS\) \}\)/.test(fallbackText) || !/SOURCE_FALLBACK_RECOVERY_TIMEOUT_MS\s*=\s*20000/.test(fallbackText) || !/function awaitSourceFallbackBudget/.test(fallbackText) || (playbackText.match(/timeoutMs:\s*9000/g) || []).length < 2 || (playbackText.match(/timeoutMs:\s*14000/g) || []).length < 2 || (playbackText.match(/timeoutMs:\s*15000/g) || []).length < 4 || (playbackText.match(/timeoutMs:\s*20000/g) || []).length < 2) {
     fail('fallback search, normal source resolution, and gapless source resolution must all be time-bounded');
   }
   if (!/alternateData[\s\S]{0,220}!alternateData\.url[\s\S]{0,320}playQueue\[idx\] = committedCandidate/.test(fallbackText) || !/fallbackStarted === true[\s\S]{0,180}已自动切换音源/.test(fallbackText) || !/function restoreSourceFallbackQueueItem/.test(fallbackText)) {
@@ -2090,7 +2057,7 @@ async function checkProviderFallbackTerminalStateGuard() {
   if (!/AUDIO_PLAY_REQUEST_TIMEOUT_MS\s*=\s*9000/.test(controlsText) || !/function awaitMediaPlayWithTimeout/.test(controlsText) || (controlsText.match(/awaitMediaPlayWithTimeout\(/g) || []).length < 5 || !/function playbackMediaMatchesCurrentQueueItem/.test(controlsText)) {
     fail('media.play promises must be time-bounded and manual resume must reject stale audio ownership');
   }
-  if (!/function probePlaybackAudioUrl/.test(serverText) || !/AUDIO_URL_PROBE_BYTES\s*=\s*8192/.test(serverText) || !/function audioProbeMagic/.test(serverText) || !/audioProxyHeadersFor\(audioUrl, 'bytes=0-'/.test(serverText) || !/&& !!magic/.test(serverText) || !/function probeQQAudioUrl/.test(serverText) || !/probe\.ok/.test(serverText) || !/function readStreamChunkWithTimeout/.test(serverText) || !/fetchWithTimeout\(audioUrl, \{ headers: hdr \}, 9000\)/.test(serverText)) {
+  if (!/function probePlaybackAudioUrl/.test(serverText) || !/AUDIO_URL_PROBE_BYTES\s*=\s*8192/.test(serverText) || !/function audioProbeMagic/.test(serverText) || !/audioProxyHeadersFor\(audioUrl, 'bytes=0-'/.test(serverText) || !/&& !!magic/.test(serverText) || !/function probeQQAudioUrl/.test(serverText) || !/probe\.ok/.test(serverText) || !/function readStreamChunkWithTimeout/.test(serverText) || !/openPublicMedia\(mediaUrl,/.test(serverText) || !/MEDIA_HEADERS_TIMEOUT[\s\S]{0,30}9000/.test(mediaTransportText) || !/response\.setTimeout\(12000/.test(mediaTransportText) || !/await pipeMedia\(upstream, res,/.test(serverText)) {
     fail('provider URL resolution and the audio proxy must verify real upstream bytes with bounded connection and stream waits');
   }
   const magicStart = serverText.indexOf('function audioProbeMagic');
@@ -2711,8 +2678,10 @@ async function checkProviderAuthCookiePathGuard() {
   if (!/function ensureLocalServerStarted\(\)/.test(mainText) || !/function configureLocalServerEnvironment\(port\)/.test(mainText) || !/delete require\.cache\[require\.resolve\(serverModulePath\)\]/.test(mainText)) {
     fail('Electron main must configure auth storage env paths before requiring server.js');
   }
-  if (!/async function loadMainWindowWithRetry\(win\)/.test(mainText) || !/const port = mainServerPort \|\| process\.env\.PORT \|\| 3000/.test(mainText) || !/win\.loadURL\(targetUrl\)/.test(mainText)) {
-    fail('Main window navigation must use the configured server port through the bounded retry path');
+  if (!/async function loadMainWindowWithRetry\(win\)/.test(mainText) || !/const baseUrl = mainRendererOrigin/.test(mainText) || !/win\.loadURL\(targetUrl\)/.test(mainText)
+      || !/loadRendererOrigin\(STABLE_USER_DATA_PATH\)/.test(mainText) || !/protocol\.handle\('http', createLocalProtocolHandler\(/.test(mainText)
+      || !/backendOrigin: \(\) => mainServerPort/.test(mainText) || !/localServer\.getLocalRequestHeaders\(\)/.test(mainText)) {
+    fail('Main window navigation must preserve its stable renderer origin, forwarding authenticated requests to the actual backend through the bounded retry path');
   }
   if (!/function reportWindowCreationFailure\(context, error\)/.test(mainText) || !/dialog\.showErrorBox\('Mineradio 启动失败'/.test(mainText)) {
     fail('Main window startup failures must be surfaced instead of leaving a headless server process');
@@ -3131,13 +3100,20 @@ function checkAlbumDetailGaplessGuard() {
   if (!/fadeWatchdogTimer = setInterval\(function \(\) \{[\s\S]{0,100}applyStep\(performance\.now\(\)\)/.test(playbackText) || !/function scheduleAlbumGaplessNormalFallback\(\)/.test(playbackText) || !/audio !== preload\.media && audio !== handoffPreviousAudio/.test(playbackText) || !/albumGaplessState\.preload\.mixStarted[\s\S]{0,160}restoreAlbumGaplessOutgoingIfCurrent/.test(playbackText)) {
     fail('album gapless must keep its gain curve alive off-RAF, restore on disable, and fall back whether B was adopted or not');
   }
-  if (!/function playbackAttemptStillCurrent\(media, token\)/.test(controlsText) || !/expectedMedia: opts\.expectedMedia \|\| audio/.test(controlsText) || !/expectedToken: opts\.expectedToken == null \? trackSwitchToken/.test(controlsText) || !/expectedMedia: playbackMedia, expectedToken: token/.test(playbackText)) {
+  if (!/function playbackAttemptStillCurrent\(media, token\)/.test(controlsText)
+      || !/var expectedMedia = opts\.expectedMedia \|\| audio;/.test(controlsText)
+      || !/var expectedToken = opts\.expectedToken == null \? trackSwitchToken : opts\.expectedToken;/.test(controlsText)
+      || !/expectedMedia: expectedMedia, expectedToken: expectedToken/.test(controlsText)
+      || !/expectedMedia: playbackMedia, expectedToken: token/.test(playbackText)
+      || !/expectedMedia: media, expectedToken: token/.test(playbackText)) {
     fail('stale play promises must be scoped to the media element and track token that started them');
   }
   if (!/var albumGaplessAdoptedGain = 0/.test(playbackText) || !/albumGaplessAdoptedGain = albumGaplessMixed[\s\S]{0,100}Number\(audio\.volume\)/.test(playbackText) || !/setAudioOutputGainImmediate\(albumGaplessMixed \? albumGaplessAdoptedGain : audioSilentFloor\(\)\)/.test(playbackText) || !/preserveGain:\s*albumGaplessMixed/.test(playbackText) || !/rampAudioOutputGain\(targetVolume, ALBUM_GAPLESS_ADOPT_SLEW_MS\)/.test(playbackText) || !/preserveGain:\s*!!opts\.preserveGain/.test(controlsText) || !/else if \(!opts\.preserveGain\) restorePlaybackGain\(\)/.test(controlsText)) {
     fail('mixed album handoff must adopt, preserve, and gently settle the incoming gain without a restorePlaybackGain jump');
   }
-  if (!/preloadedAudio/.test(playbackText) || !/preloadedProxyAudioUrl/.test(playbackText) || !/albumGaplessMixed/.test(playbackText) || !/skipShuffleOrder: true/.test(playbackText) || !/searchAlternatePlatformSong\(nextSong\)/.test(playbackText) || !/playQueue\[preload\.index\] = hydrateCustomCover\(preload\.song\)/.test(playbackText)) {
+  if (!/preloadedAudio/.test(playbackText) || !/preloadedProxyAudioUrl/.test(playbackText) || !/albumGaplessMixed/.test(playbackText) || !/skipShuffleOrder: true/.test(playbackText)
+      || !/await resolvePlaybackByProviderOrder\(nextSong,\s*\{\s*isCurrent: function \(\) \{ return serial === albumGaplessState\.serial && token === trackSwitchToken && sourceIdx === currentIdx; \}/.test(playbackText)
+      || !/playQueue\[preload\.index\] = hydrateCustomCover\(preload\.song\)/.test(playbackText)) {
     fail('album gapless handoff must reuse preheated audio, pre-resolve metadata-source fallback, and force album order instead of shuffle order');
   }
   const coverText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '02-visual', '15-ripples-cover-depth.js'), 'utf8');
@@ -5572,7 +5548,16 @@ function checkFirstLaunchDefaultsAndSplashGuard() {
   const end = defaultsText.indexOf('\n};', start);
   if (start < 0 || end < 0) fail('fxDefaults object cannot be inspected');
   const defaults = vm.runInNewContext(`(${defaultsText.slice(start + marker.length, end + 2)})`, Object.create(null));
-  const snapshot = archive && archive.snapshot;
+  const archiveNormalizer = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '07-fx', '00-preset-archive-data.js'), 'utf8');
+  if (!/lyricSkyline:\s*!!raw\.lyricSkyline/.test(archiveNormalizer)) {
+    fail('legacy captured archives must normalize an absent Skyline toggle to false');
+  }
+  // This captured export predates the append-only Skyline toggle. Importing it
+  // already applies the explicit boolean migration above; compare its effective
+  // values, retaining exact key/value checks for every other setting.
+  const snapshot = archive && archive.snapshot
+    ? Object.assign({}, archive.snapshot, { lyricSkyline: !!archive.snapshot.lyricSkyline })
+    : null;
   const keys = Object.keys(defaults);
   const snapshotKeys = snapshot ? Object.keys(snapshot).filter(key => key !== 'visualPresetSchema') : [];
   const drift = keys.filter(key => !snapshot || JSON.stringify(snapshot[key]) !== JSON.stringify(defaults[key]));
@@ -5659,7 +5644,7 @@ async function main() {
   checkLyricBackfaceMaterialGuard();
   checkLyricScrollPerformanceGuard();
   checkPersistentCacheStorageGuard();
-  checkExternalUpdatePageBridgeGuard();
+  checkForkUpdateChannelGuard();
   checkLyricTranslationCompletenessGuard();
   checkLyricVerticalFloatToggleGuard();
   checkQishuiProviderGuard();

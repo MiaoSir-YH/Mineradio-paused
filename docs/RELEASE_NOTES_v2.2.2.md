@@ -15,4 +15,4 @@ BrimDeck 的普通播放器歌词根据曲名、歌手在线匹配，并用系�
 
 安装包在 GitHub Windows 环境从 `v2.2.2` 标签完整构建。全仓回归、真实 Electron 媒体接口、包内版本与源码一致性、安装文件清单及原生应用启动检查的实际结果见 Release 的 `Mineradio-2.2.2-build-info.json`。这些检查不等于完成 Windows 安装/卸载交互或 BrimDeck 实机联调。
 
-[完整修复说明](review-fixes-2026-11-05.md)。请从本次 GitHub Release 附件下载，历史网盘内容未更新。
+[完整修复说明](review-fixes-2026-11-05.md)。

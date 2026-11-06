@@ -138,13 +138,13 @@ function createQishuiQrLoginBridge(options) {
   }
 
   async function clear() {
-    qrGeneration += 1;
+    const generation = ++qrGeneration;
     activeQrToken = '';
     confirmedQrToken = '';
     confirmedQrResult = null;
     qrPending = false;
     await auth.clear();
-    updateConfig({ cookie: '', msToken: '' });
+    if (generation === qrGeneration) updateConfig({ cookie: '', msToken: '' });
     return getStatus();
   }
 

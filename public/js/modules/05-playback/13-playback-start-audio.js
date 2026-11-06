@@ -915,20 +915,26 @@ async function playLocalQueueSong(song, idx, token, firstVisualPlay, opts, resum
     audio.pause();
   }
   resetPlaybackAudioGraphForSourceSwitch('local-track-switch');
-  audio.autoplay = true;
-  audio.preload = 'auto';
-  syncActiveAudioRepeatMode(audio);
-  bindPlaybackProgressEvents(audio);
+  var media = audio;
+  function ownsPlayback() {
+    return token === trackSwitchToken && audio === media && currentLocalSong === song
+      && playQueue[currentIdx] && queueItemKey(playQueue[currentIdx]) === queueItemKey(song);
+  }
+  media.autoplay = true;
+  media.preload = 'auto';
+  syncActiveAudioRepeatMode(media);
+  bindPlaybackProgressEvents(media);
   applyVolumeToAudio();
-  await applyAudioOutputDevice(audio);
-  audio.src = song.localUrl;
-  audio.__mineradioQueueItemKey = queueItemKey(song);
-  audio.__mineradioTrackSwitchToken = token;
+  await applyAudioOutputDevice(media);
+  if (!ownsPlayback()) return false;
+  media.src = song.localUrl;
+  media.__mineradioQueueItemKey = queueItemKey(song);
+  media.__mineradioTrackSwitchToken = token;
   if (typeof syncSystemMediaSession === 'function') syncSystemMediaSession('local-source');
   updatePlaybackProgressUi();
   lyricSunEnergy = 0; lyricSunTarget = 0; lyricSunHold = 0; lyricSunAvg = 0; lyricSunPeak = 0.55;
-  audio.onended = function () {
-    if (token !== trackSwitchToken) return;
+  media.onended = function () {
+    if (!ownsPlayback()) return;
     if (this && this.__mineradioCuefieldEndedRecoveryToken === token) return;
     if (typeof cuefieldAutoMixExecuting !== 'undefined' && cuefieldAutoMixExecuting) {
       if (typeof noteCuefieldAutoMixOutgoingEnded === 'function') noteCuefieldAutoMixOutgoingEnded(this, token, currentIdx);
@@ -940,17 +946,15 @@ async function playLocalQueueSong(song, idx, token, firstVisualPlay, opts, resum
     if (playMode === 'single') setTimeout(function () { playQueueAt(currentIdx, { autoRepeat: true, suppressPlayFailureNotice: true }); }, 0);
     else setTimeout(nextTrack, 0);
   };
-  audio.onloadedmetadata = function () {
-    if (token !== trackSwitchToken || !currentLocalSong || currentLocalSong.localKey !== song.localKey) return;
-    var duration = audio && isFinite(audio.duration) ? audio.duration : 0;
-    currentLocalSong.duration = duration;
-    if (playQueue[idx]) playQueue[idx].duration = duration;
+  media.onloadedmetadata = function () {
+    if (!ownsPlayback()) return;
+    song.duration = isFinite(media.duration) ? media.duration : 0;
     if (lyricSourceMode === 'custom') applyCustomLyricState(currentLocalSong, true);
     safeRenderQueuePanel('local-metadata', { scrollCurrent: miniQueueOpen });
   };
-  scheduleAudioResumePosition(audio, opts.resumeAt != null ? opts.resumeAt : resumeAt, token);
+  scheduleAudioResumePosition(media, opts.resumeAt != null ? opts.resumeAt : resumeAt, token);
   if (resumeAt > 0) pendingPlaybackResumeAt = 0;
-  audio.load();
+  media.load();
   currentBeatMap = null;
   beatMapNextIdx = 0;
   resetAudioVisualState();
@@ -961,7 +965,8 @@ async function playLocalQueueSong(song, idx, token, firstVisualPlay, opts, resum
   djBeatMapToken++;
   resetDjBeatMapState();
   setDjModeActive(false);
-  var playbackStarted = await playAudio({ manual: !!opts.manual, silent: !!opts.startupAutoplay || !opts.manual, startupAutoplay: !!opts.startupAutoplay, trackSwitch: true, resumeRecovery: !!opts.resumeRecovery });
+  var playbackStarted = await playAudio({ manual: !!opts.manual, silent: !!opts.startupAutoplay || !opts.manual, startupAutoplay: !!opts.startupAutoplay, trackSwitch: true, resumeRecovery: !!opts.resumeRecovery, expectedMedia: media, expectedToken: token });
+  if (!ownsPlayback()) return false;
   if (!playbackStarted) {
     forcePlaybackControlsInteractive();
     if (opts.startupAutoplay) {
@@ -980,8 +985,8 @@ async function playLocalQueueSong(song, idx, token, firstVisualPlay, opts, resum
   scheduleShelfRebuild('play-local-queue', true);
   scheduleAlbumGaplessPreloadForCurrent(token, 'local-started');
   setTimeout(function () {
-    if (token === trackSwitchToken && currentLocalSong && currentLocalSong.localKey === song.localKey) {
-      prepareLocalBeatAnalysis(currentLocalSong, song.localUrl);
+    if (ownsPlayback()) {
+      prepareLocalBeatAnalysis(song, song.localUrl);
     }
   }, firstVisualPlay ? 680 : 520);
   return true;

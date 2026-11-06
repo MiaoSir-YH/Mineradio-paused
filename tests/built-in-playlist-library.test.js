@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { BuiltInPlaylistLibrary } = require('../desktop/built-in-playlist-library');
+const { LocalMusicLibrary } = require('../desktop/local-music-library');
 
 test('built-in playlists persist mixed-provider songs without changing their source', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mineradio-built-in-playlists-'));
@@ -40,7 +41,7 @@ test('built-in playlists persist mixed-provider songs without changing their sou
   await restored.rename(id, '常听合集');
   await restored.reorderTrack(id, 4, 0);
   assert.equal(restored.page(id, { limit: 1 }).tracks[0].provider, 'local');
-  await restored.removeTrack(id, 0);
+  await restored.removeTrack(id, 'local:0123456789abcdef01234567');
   assert.equal(restored.page(id, { limit: 20 }).total, 4);
 
   await assert.rejects(
@@ -49,6 +50,50 @@ test('built-in playlists persist mixed-provider songs without changing their sou
   );
   await restored.delete(id);
   assert.equal(restored.listSync().count, 0);
+});
+
+test('built-in local tracks resolve a fresh capability after restart, including old saved entries', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mineradio-built-in-local-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const audioPath = path.join(root, 'track.wav');
+  fs.writeFileSync(audioPath, Buffer.from([1, 2, 3, 4]));
+  const local = new LocalMusicLibrary({ userDataPath: root, parseMetadata: async () => ({ common: { title: 'Local' } }) });
+  const imported = await local.importFiles([{ path: audioPath }]);
+  const track = imported.tracks[0];
+  const first = new BuiltInPlaylistLibrary({ userDataPath: root, resolveLocalTrack: (id) => local.trackById(id) });
+  const id = (await first.create('Local')).playlist.id;
+  await first.addTrack(id, track);
+  assert.equal(first.page(id).tracks[0].localUrl, track.localUrl);
+
+  const stored = JSON.parse(fs.readFileSync(first.indexPath, 'utf8'));
+  const saved = stored.playlists[0].tracks[0];
+  assert.equal(saved.localUrl, undefined);
+  saved.localUrl = track.localUrl;
+  delete saved.localFileId;
+  delete saved.localKey;
+  fs.writeFileSync(first.indexPath, JSON.stringify(stored));
+  const oldLocalIndex = JSON.parse(fs.readFileSync(local.indexPath, 'utf8'));
+  delete oldLocalIndex.mediaToken;
+  fs.writeFileSync(local.indexPath, JSON.stringify(oldLocalIndex));
+
+  const restartedLocal = new LocalMusicLibrary({ userDataPath: root });
+  const restored = new BuiltInPlaylistLibrary({ userDataPath: root, resolveLocalTrack: (key) => restartedLocal.trackById(key) });
+  const restoredTrack = restored.page(id).tracks[0];
+  assert.equal(restoredTrack.localFileId, track.localFileId);
+  assert.notEqual(restoredTrack.localUrl, track.localUrl);
+  assert.equal((await restartedLocal.mediaResponse(new Request(restoredTrack.localUrl, { method: 'HEAD' }))).status, 200);
+  assert.equal((await restartedLocal.mediaResponse(new Request(track.localUrl, { method: 'HEAD' }))).status, 404);
+});
+
+test('concurrent removals use the originally selected tracks after earlier rows move', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mineradio-built-in-remove-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const library = new BuiltInPlaylistLibrary({ userDataPath: root });
+  const id = (await library.create('Queue')).playlist.id;
+  for (const name of ['A', 'B', 'C', 'D']) await library.addTrack(id, { id: name, name });
+  const [a, b] = library.page(id, { limit: 2 }).tracks;
+  await Promise.all([library.removeTrack(id, a.builtInIdentity), library.removeTrack(id, b.builtInIdentity)]);
+  assert.deepEqual(library.page(id).tracks.map((track) => track.name), ['C', 'D']);
 });
 
 test('Electron and renderer wiring exposes built-in playlists in collection, panel, queue and shelf', () => {
@@ -63,7 +108,7 @@ test('Electron and renderer wiring exposes built-in playlists in collection, pan
   const shelf = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '04-shelf', '01-manager-core.js'), 'utf8');
   const shelfContent = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '04-shelf', '03-content-list-manager.js'), 'utf8');
 
-  assert.match(main, /new BuiltInPlaylistLibrary\(\{ userDataPath: STABLE_USER_DATA_PATH \}\)/);
+  assert.match(main, /new BuiltInPlaylistLibrary\(\{\s*userDataPath: STABLE_USER_DATA_PATH,\s*resolveLocalTrack: \(id\) => localMusicLibrary\.trackById\(id\)/);
   assert.match(main, /mineradio-built-in-playlist-add-track/);
   assert.match(preload, /listBuiltInPlaylists/);
   assert.match(preload, /addBuiltInPlaylistTrack/);

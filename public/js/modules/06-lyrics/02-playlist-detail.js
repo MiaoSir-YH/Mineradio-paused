@@ -370,7 +370,7 @@ function bindPlaylistPanelDetailScroller() {
 }
 async function loadMorePlaylistPanelDetailTracks(reason) {
   var st = playlistPanelDetailState;
-  if (!st.key || st.loadingMore || (reason !== 'initial' && !st.hasMore)) return false;
+  if (!st.key || st.loadingMore || st.pendingRemovals || (reason !== 'initial' && !st.hasMore)) return false;
   var parts = st.key.split(':');
   var provider = normalizePlaylistProvider(parts[0]);
   var pid = parts.slice(1).join(':');
@@ -397,6 +397,7 @@ async function loadMorePlaylistPanelDetailTracks(reason) {
     st.loadingMore = false;
     st.error = (r && r.error) || '';
     st.message = (r && (r.message || r.warning)) || '';
+    if (provider === 'mineradio' && r && Number.isFinite(r.revision)) st.builtInRevision = r.revision;
     if (r && r.playlist) st.playlist = Object.assign({}, st.playlist || {}, r.playlist);
     if (reason === 'initial') {
       renderPlaylistPanelDetailState();
@@ -772,7 +773,10 @@ document.getElementById('pl-list').addEventListener('click', function (e) {
     e.preventDefault();
     e.stopPropagation();
     var detailParts = String(playlistPanelDetailState.key || '').split(':');
-    if (normalizePlaylistProvider(detailParts[0]) === 'mineradio') removeTrackFromBuiltInPlaylist(detailParts.slice(1).join(':'), Number(removeTrack.getAttribute('data-pl-detail-remove')));
+    var track = playlistPanelDetailState.tracks[Number(removeTrack.getAttribute('data-pl-detail-remove'))];
+    if (track && normalizePlaylistProvider(detailParts[0]) === 'mineradio') {
+      removeTrackFromBuiltInPlaylist(detailParts.slice(1).join(':'), track.builtInIdentity);
+    }
     return;
   }
   var artist = e.target && e.target.closest ? e.target.closest('[data-pl-detail-artist]') : null;

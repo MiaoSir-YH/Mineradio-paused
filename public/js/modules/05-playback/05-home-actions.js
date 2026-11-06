@@ -1,6 +1,7 @@
 function songFromListenRecord(record) {
   if (!record) return null;
-  var provider = record.sourceKey || '';
+  var provider = record.sourceKey || record.provider || '';
+  if (!provider && (record.localFileId || record.localKey || /^local:/i.test(record.id || record.key || ''))) provider = 'local';
   if (!provider && record.type === 'qq') provider = 'qq';
   if (!provider) provider = record.mid ? 'qq' : 'netease';
   return {
@@ -16,14 +17,30 @@ function songFromListenRecord(record) {
     cover: record.cover || '',
   };
 }
+var homeRecentPlaybackSerial = 0;
 async function playHomeRecent(record) {
+  var request = ++homeRecentPlaybackSerial;
   record = record || homeListenSummary().recent;
   if (!record) {
     showToast('还没有听歌记录');
     return;
   }
   var song = songFromListenRecord(record);
-  if (!song || (!song.id && !song.mid)) {
+  if (song && (song.type === 'local' || song.source === 'local')) {
+    song = findLocalMusicTrack(record);
+    if (!song && typeof persistedLocalLibraryRestorePromise !== 'undefined') {
+      var token = trackSwitchToken;
+      var queueIntent = playlistQueueLoadSerial;
+      await persistedLocalLibraryRestorePromise;
+      if (request !== homeRecentPlaybackSerial || token !== trackSwitchToken || queueIntent !== playlistQueueLoadSerial) return;
+      song = findLocalMusicTrack(record);
+    }
+    if (!song) {
+      showToast('本地文件已失效，请重新导入后继续');
+      return;
+    }
+  }
+  if (!song || (!song.id && !song.mid && !song.localUrl)) {
     runHomeSearch(record.name || '');
     return;
   }

@@ -21,7 +21,7 @@ function count(text, pattern) {
 
 assert.match(playbackText, /function\s+syncActiveAudioRepeatMode\s*\(/);
 assert.match(playbackText, /function\s+restartSingleRepeatMedia\s*\(/);
-assert.ok(count(playbackText, /syncActiveAudioRepeatMode\(audio\);/g) >= 2, 'local and remote playback paths must sync Audio.loop');
+assert.ok(count(playbackText, /syncActiveAudioRepeatMode\((?:audio|media)\);/g) >= 2, 'local and remote playback paths must sync Audio.loop');
 assert.equal(
   count(playbackText, /if\s*\(restartSingleRepeatMedia\(this,\s*token,\s*currentIdx,\s*'[^']+'\)\)\s*return;\s*finalizeListenSession\(true\);/g),
   2,

@@ -285,6 +285,7 @@
         state.lastStatus = 'ready';
         return { status: 'ready', pending: state.pending };
       } catch (err) {
+        if (serial !== state.serial) return { status: 'stale' };
         reset('error');
         return { status: 'error', error: err && err.message ? err.message : String(err) };
       }

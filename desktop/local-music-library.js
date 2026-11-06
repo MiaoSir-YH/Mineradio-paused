@@ -369,6 +369,12 @@ class LocalMusicLibrary {
     };
   }
 
+  trackById(value) {
+    const id = cleanText(value, '', 64).replace(/^local:/i, '').toLowerCase();
+    const record = this.records.get(id);
+    return record ? this.serializeRecord(record) : null;
+  }
+
   listTracksSync() {
     const tracks = [];
     for (const id of this.order) {

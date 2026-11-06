@@ -72,9 +72,9 @@
 !macro customInit
   !ifndef BUILD_UNINSTALLER
     Call MineradioUsePreferredInstallDir
-    Call MineradioDisableUnsafeOldUninstallers
     ${If} ${Silent}
       Call MineradioValidateInstallDir
+      Call MineradioDisableUnsafeOldUninstallers
     ${EndIf}
   !endif
 !macroend
@@ -451,14 +451,72 @@ FunctionEnd
 Function MineradioInstallDirLooksOwned
   Exch $0
   Push $1
+  Push $2
+  Push $3
   StrCpy $1 "0"
 
-  IfFileExists "$0\${MINERADIO_INSTALL_MARKER}" 0 +2
-    StrCpy $1 "1"
+  Push "$0\${MINERADIO_INSTALL_MARKER}"
+  Call MineradioPathHasNoReparsePoints
+  Pop $2
+  StrCmp $2 "1" 0 owned_done
+  ClearErrors
+  FileOpen $2 "$0\${MINERADIO_INSTALL_MARKER}" r
+  ${If} ${Errors}
+    Goto owned_done
+  ${EndIf}
+  FileRead $2 $3
+  StrCmpS $3 "Mineradio install root$\r$\n" 0 owned_close
+  FileRead $2 $3
+  StrCmpS $3 "appId=${MINERADIO_MARKER_APP_ID}$\r$\n" 0 owned_close
+  StrCpy $1 "1"
 
-  StrCpy $0 "$1"
-  Pop $1
+  owned_close:
+    FileClose $2
+  owned_done:
+    StrCpy $0 "$1"
+    Pop $3
+    Pop $2
+    Pop $1
+    Exch $0
+FunctionEnd
+
+; Check the path and every existing ancestor, including the install root.
+; Nonexistent descendants are allowed when preparing a new installation.
+Function MineradioPathHasNoReparsePoints
   Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  StrCpy $1 "0"
+  GetFullPathName $4 "$0"
+  StrCmp $4 "$0" 0 path_check_done
+  StrCpy $2 "$4" 1 1
+  StrCpy $3 "$4" 1 2
+  StrCmp $2 ":" 0 path_check_done
+  StrCmp $3 "\" 0 path_check_done
+  path_check_loop:
+    System::Call 'kernel32::GetFileAttributesW(w r4) i .r5'
+    ${If} $5 != -1
+      IntOp $5 $5 & 0x400
+      StrCmp $5 "0" 0 path_check_done
+    ${EndIf}
+    ${GetParent} "$4" $2
+    StrCmp $2 "" path_check_safe
+    StrCmp $2 "$4" path_check_safe
+    StrCpy $4 "$2"
+    Goto path_check_loop
+  path_check_safe:
+    StrCpy $1 "1"
+  path_check_done:
+    StrCpy $0 "$1"
+    Pop $5
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Exch $0
 FunctionEnd
 
 Function MineradioExistingInstallPathCanBeAdopted
@@ -486,13 +544,23 @@ Function MineradioExistingInstallPathCanBeAdopted
     Goto done
   ${EndIf}
 
+  Push "$2"
+  Call MineradioPathHasNoReparsePoints
+  Pop $3
+  StrCmp $3 "1" 0 done
   IfFileExists "$2\*.*" 0 done
-  IfFileExists "$2\${MINERADIO_INSTALL_MARKER}" adopt 0
-  IfFileExists "$2\${PRODUCT_FILENAME}.exe" adopt 0
-  IfFileExists "$2\resources\app.asar" adopt 0
-  IfFileExists "$2\resources\app\package.json" adopt 0
-  IfFileExists "$2\resources\app\server.js" adopt 0
-  Goto done
+  IfFileExists "$2\${MINERADIO_INSTALL_MARKER}" check_marker legacy
+  check_marker:
+    Push "$2"
+    Call MineradioInstallDirLooksOwned
+    Pop $1
+    Goto done
+  legacy:
+    ; Generic Electron files alone do not identify this product or edition.
+    IfFileExists "$2\${PRODUCT_FILENAME}.exe" 0 done
+    IfFileExists "$2\resources\app.asar" adopt 0
+    IfFileExists "$2\resources\app\package.json" 0 done
+    IfFileExists "$2\resources\app\server.js" adopt done
 
   adopt:
     StrCpy $1 "1"
@@ -692,9 +760,8 @@ Function MineradioOldInstallPathNeedsQuarantine
     Goto done
   ${EndIf}
 
-  IfFileExists "$2\${MINERADIO_INSTALL_MARKER}" done 0
   Push "$2"
-  Call MineradioExistingInstallPathCanBeAdopted
+  Call MineradioInstallDirLooksOwned
   Pop $4
   ${If} $4 == "1"
     Goto done
@@ -716,8 +783,6 @@ Function MineradioDisableUnsafeOldUninstallers
 
   ReadRegStr $0 HKCU "Software\${APP_GUID}" InstallLocation
   Push "$0"
-  Call MineradioDeleteLegacyUninstallerFileIfMissingMarker
-  Push "$0"
   Call MineradioOldInstallPathNeedsQuarantine
   Pop $1
   ${If} $1 == "1"
@@ -727,13 +792,19 @@ Function MineradioDisableUnsafeOldUninstallers
 
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" InstallLocation
   Push "$0"
-  Call MineradioDeleteLegacyUninstallerFileIfMissingMarker
-  Push "$0"
   Call MineradioOldInstallPathNeedsQuarantine
   Pop $1
   ${If} $1 == "1"
     DetailPrint "Skip unsafe legacy Mineradio uninstaller: $0"
     StrCpy $2 "1"
+  ${EndIf}
+
+  ; An uninstall command without an owned location must not be executed.
+  ${If} $0 == ""
+    ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" UninstallString
+    ${If} $1 != ""
+      StrCpy $2 "1"
+    ${EndIf}
   ${EndIf}
 
   ${If} $2 == "1"
@@ -745,8 +816,6 @@ Function MineradioDisableUnsafeOldUninstallers
 
   ReadRegStr $0 HKLM "Software\${APP_GUID}" InstallLocation
   Push "$0"
-  Call MineradioDeleteLegacyUninstallerFileIfMissingMarker
-  Push "$0"
   Call MineradioOldInstallPathNeedsQuarantine
   Pop $1
   ${If} $1 == "1"
@@ -756,13 +825,18 @@ Function MineradioDisableUnsafeOldUninstallers
 
   ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" InstallLocation
   Push "$0"
-  Call MineradioDeleteLegacyUninstallerFileIfMissingMarker
-  Push "$0"
   Call MineradioOldInstallPathNeedsQuarantine
   Pop $1
   ${If} $1 == "1"
     DetailPrint "Skip unsafe legacy Mineradio uninstaller: $0"
     StrCpy $2 "1"
+  ${EndIf}
+
+  ${If} $0 == ""
+    ReadRegStr $1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" UninstallString
+    ${If} $1 != ""
+      StrCpy $2 "1"
+    ${EndIf}
   ${EndIf}
 
   ${If} $2 == "1"
@@ -771,29 +845,18 @@ Function MineradioDisableUnsafeOldUninstallers
   ${EndIf}
 FunctionEnd
 
-Function MineradioDeleteLegacyUninstallerFileIfMissingMarker
-  Exch $0
-  Push $1
-  ${If} $0 != ""
-    Push "$0"
-    Call MineradioTrimInstallDir
-    Pop $1
-    ${If} $1 != ""
-      IfFileExists "$1\${MINERADIO_INSTALL_MARKER}" done 0
-      DetailPrint "Remove legacy Mineradio uninstaller file: $1"
-      Delete "$1\Uninstall ${PRODUCT_FILENAME}.exe"
-    ${EndIf}
-  ${EndIf}
-
-  done:
-  Pop $1
-  Pop $0
-FunctionEnd
-
 Function MineradioValidateInstallDir
   Push "$INSTDIR"
   Call MineradioNormalizeInstallDir
   Pop $INSTDIR
+
+  Push "$INSTDIR"
+  Call MineradioPathHasNoReparsePoints
+  Pop $0
+  ${If} $0 != "1"
+    MessageBox MB_ICONSTOP|MB_OK "安装路径或其上级目录包含链接，或不是本机绝对路径。请选择普通的 Mineradio 文件夹。"
+    Abort
+  ${EndIf}
 
   Push "$INSTDIR"
   Call MineradioRegisteredInstallDirCanBeAdopted
@@ -980,6 +1043,9 @@ Function MineradioDirectoryLeave
   StrCpy $INSTDIR "$0"
   SendMessage $MineradioDirectoryInput ${WM_SETTEXT} 0 "STR:$INSTDIR"
   Call MineradioValidateInstallDir
+  ; This is the final page, after the user chooses Install. Opening or
+  ; cancelling the wizard must never change the previous installation.
+  Call MineradioDisableUnsafeOldUninstallers
 FunctionEnd
 !endif
 
@@ -993,14 +1059,70 @@ FunctionEnd
 Function un.MineradioInstallDirLooksOwned
   Exch $0
   Push $1
+  Push $2
+  Push $3
   StrCpy $1 "0"
 
-  IfFileExists "$0\${MINERADIO_INSTALL_MARKER}" 0 +2
-    StrCpy $1 "1"
+  Push "$0\${MINERADIO_INSTALL_MARKER}"
+  Call un.MineradioPathHasNoReparsePoints
+  Pop $2
+  StrCmp $2 "1" 0 owned_done
+  ClearErrors
+  FileOpen $2 "$0\${MINERADIO_INSTALL_MARKER}" r
+  ${If} ${Errors}
+    Goto owned_done
+  ${EndIf}
+  FileRead $2 $3
+  StrCmpS $3 "Mineradio install root$\r$\n" 0 owned_close
+  FileRead $2 $3
+  StrCmpS $3 "appId=${MINERADIO_MARKER_APP_ID}$\r$\n" 0 owned_close
+  StrCpy $1 "1"
 
-  StrCpy $0 "$1"
-  Pop $1
+  owned_close:
+    FileClose $2
+  owned_done:
+    StrCpy $0 "$1"
+    Pop $3
+    Pop $2
+    Pop $1
+    Exch $0
+FunctionEnd
+
+Function un.MineradioPathHasNoReparsePoints
   Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  StrCpy $1 "0"
+  GetFullPathName $4 "$0"
+  StrCmp $4 "$0" 0 path_check_done
+  StrCpy $2 "$4" 1 1
+  StrCpy $3 "$4" 1 2
+  StrCmp $2 ":" 0 path_check_done
+  StrCmp $3 "\" 0 path_check_done
+  path_check_loop:
+    System::Call 'kernel32::GetFileAttributesW(w r4) i .r5'
+    ${If} $5 != -1
+      IntOp $5 $5 & 0x400
+      StrCmp $5 "0" 0 path_check_done
+    ${EndIf}
+    ${GetParent} "$4" $2
+    StrCmp $2 "" path_check_safe
+    StrCmp $2 "$4" path_check_safe
+    StrCpy $4 "$2"
+    Goto path_check_loop
+  path_check_safe:
+    StrCpy $1 "1"
+  path_check_done:
+    StrCpy $0 "$1"
+    Pop $5
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Exch $0
 FunctionEnd
 
 Function un.MineradioNormalizeInstallDir
@@ -1090,12 +1212,31 @@ Function un.MineradioValidateUninstallDir
 FunctionEnd
 
 Function un.MineradioRemoveInstalledFiles
+  ; Recheck immediately before deletion, after the confirmation page.
+  Call un.MineradioValidateUninstallDir
   SetOutPath $TEMP
   Call un.MineradioRemoveManifestFiles
+  Pop $0
+  ${If} $0 == "invalid"
+    MessageBox MB_OK|MB_ICONSTOP "安装文件清单无效或包含链接，已停止卸载。请重新安装 Mineradio 后再卸载。"
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
 
-  Delete "$INSTDIR\${PRODUCT_FILENAME}.exe"
+  ${If} $0 == "missing"
+    Call un.MineradioRemoveLegacyFiles
+  ${EndIf}
+
+  ; These two files are emitted by NSIS after the package inventory is built.
   Delete "$INSTDIR\Uninstall ${PRODUCT_FILENAME}.exe"
   Delete "$INSTDIR\uninstallerIcon.ico"
+  Delete "$INSTDIR\${MINERADIO_INSTALL_MARKER}"
+  RMDir "$INSTDIR"
+FunctionEnd
+
+Function un.MineradioRemoveLegacyFiles
+  ; Only pre-manifest installations need this bounded compatibility cleanup.
+  Delete "$INSTDIR\${PRODUCT_FILENAME}.exe"
 
   Delete "$INSTDIR\chrome_100_percent.pak"
   Delete "$INSTDIR\chrome_200_percent.pak"
@@ -1119,6 +1260,5 @@ Function un.MineradioRemoveInstalledFiles
   RMDir "$INSTDIR\resources"
   RMDir "$INSTDIR\swiftshader"
 
-  RMDir "$INSTDIR"
 FunctionEnd
 !endif

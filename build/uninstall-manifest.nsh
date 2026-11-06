@@ -88,6 +88,18 @@ Function un.MineradioRemoveManifestFiles
   Push $2
   Push $3
   Push $4
+  Push $5
+  Push $6
+  Push $7
+  StrCpy $7 "invalid"
+  Push "$INSTDIR\.mineradio-installed-files"
+  Call un.MineradioPathHasNoReparsePoints
+  Pop $4
+  StrCmp $4 "1" 0 manifest_remove_done
+  IfFileExists "$INSTDIR\.mineradio-installed-files" manifest_open 0
+  StrCpy $7 "missing"
+  Goto manifest_remove_done
+  manifest_open:
   ClearErrors
   FileOpen $0 "$INSTDIR\.mineradio-installed-files" r
   ${If} ${Errors}
@@ -97,12 +109,29 @@ Function un.MineradioRemoveManifestFiles
   Push "$1"
   Call un.MineradioTrimManifestLine
   Pop $1
-  StrCmp $1 "appId=${MINERADIO_MARKER_APP_ID}" 0 manifest_remove_close
+  StrCmpS $1 "appId=${MINERADIO_MARKER_APP_ID}" 0 manifest_remove_close
+  ; Validate the entire inventory before deleting anything. An invalid or
+  ; unreadable manifest must not fall back to a list of generic filenames.
+  StrCpy $5 "validate"
+  StrCpy $6 "0"
   manifest_remove_loop:
     ClearErrors
     FileReadUTF16LE $0 $1
     ${If} ${Errors}
-      Goto manifest_remove_finished
+      StrCmp $6 "0" manifest_remove_close
+      StrCmp $5 "remove" manifest_remove_finished
+      ClearErrors
+      FileSeek $0 0 SET
+      ${If} ${Errors}
+        Goto manifest_remove_close
+      ${EndIf}
+      FileReadUTF16LE $0 $1
+      Push "$1"
+      Call un.MineradioTrimManifestLine
+      Pop $1
+      StrCmpS $1 "appId=${MINERADIO_MARKER_APP_ID}" 0 manifest_remove_close
+      StrCpy $5 "remove"
+      Goto manifest_remove_loop
     ${EndIf}
     Push "$1"
     Call un.MineradioTrimManifestLine
@@ -111,14 +140,23 @@ Function un.MineradioRemoveManifestFiles
     StrCpy $3 "$1" "" 2
     ${If} $2 != "F|"
     ${AndIf} $2 != "D|"
-      Goto manifest_remove_loop
+      Goto manifest_remove_close
     ${EndIf}
     Push "$3"
     Call un.MineradioManifestPathIsSafe
     Pop $4
-    ${If} $4 == "1"
+    StrCmp $4 "1" 0 manifest_remove_close
+    ${If} $2 == "F|"
+      StrCpy $6 "1"
+    ${EndIf}
+    ${If} $5 == "remove"
       ${If} $2 == "F|"
+        IfFileExists "$INSTDIR\$3" 0 manifest_remove_loop
+        ClearErrors
         Delete "$INSTDIR\$3"
+        ${If} ${Errors}
+          Goto manifest_remove_close
+        ${EndIf}
       ${Else}
         RMDir "$INSTDIR\$3"
       ${EndIf}
@@ -127,14 +165,18 @@ Function un.MineradioRemoveManifestFiles
   manifest_remove_finished:
     FileClose $0
     Delete "$INSTDIR\.mineradio-installed-files"
-    Delete "$INSTDIR\${MINERADIO_INSTALL_MARKER}"
+    StrCpy $7 "removed"
     Goto manifest_remove_done
   manifest_remove_close:
     FileClose $0
   manifest_remove_done:
+    StrCpy $0 "$7"
+    Pop $7
+    Pop $6
+    Pop $5
     Pop $4
     Pop $3
     Pop $2
     Pop $1
-    Pop $0
+    Exch $0
 FunctionEnd

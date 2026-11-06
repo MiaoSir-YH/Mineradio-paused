@@ -59,6 +59,7 @@ function resetSearchMusicRenderState() {
   searchMusicRenderState.loadingMore = false;
   searchMusicRenderState.providerPages = {};
   searchMusicRenderState.remoteHasMore = false;
+  searchMusicRenderState.manualMore = false;
   pendingSearchProviderPages = null;
 }
 function clearSearchResults() {
@@ -241,9 +242,14 @@ function programMetaText(item) {
   return bits.join('  ·  ');
 }
 function searchThumbHtml(src) {
+  src = searchImageAttribute(coverUrlWithSize(src, 80));
   return src
-    ? '<img src="' + coverUrlWithSize(src, 80) + '" alt="" loading="lazy" onerror="this.style.opacity=0.2">'
+    ? '<img src="' + src + '" alt="" loading="lazy" onerror="this.style.opacity=0.2">'
     : '<div style="width:40px;height:40px;border-radius:6px;background:rgba(255,255,255,0.06);flex-shrink:0"></div>';
+}
+function searchImageAttribute(src) {
+  if (!src || (!isInlineCoverSrc(src) && !isProxyableCoverUrl(src))) return '';
+  return escHtml(src).replace(/"/g, '&quot;');
 }
 function renderPodcastRadios(items, label) {
   setSearchHistorySurface(false);
@@ -1151,7 +1157,7 @@ function searchSongResultHtml(s, i) {
     var vipTag = songVipTagHtml(s);
     var sourceTag = songSourceTagHtml(s);
     var sourceClass = songProviderKey(s) + '-source';
-    var thumb = songCoverSrc(s, 80);
+    var thumb = searchImageAttribute(songCoverSrc(s, 80));
     var imgTag = thumb
       ? '<img src="' + thumb + '" alt="" loading="lazy" onerror="this.style.opacity=0.2">'
       : '<div style="width:40px;height:40px;border-radius:6px;background:rgba(255,255,255,0.06);flex-shrink:0"></div>';
@@ -1169,6 +1175,9 @@ function searchSongResultHtml(s, i) {
       '</div>';
 }
 function searchLoadMoreSentinelHtml() {
+  if (searchMusicRenderState.manualMore && searchMusicRenderState.remoteHasMore) {
+    return '<button type="button" class="search-empty search-load-more" data-search-load-more="1" onclick="resumeMusicSearchPagination()">继续加载更多歌曲</button>';
+  }
   var remaining = Math.max(0, searchMusicRenderState.songs.length - searchMusicRenderState.visibleCount);
   if (!remaining && !searchMusicRenderState.remoteHasMore && !searchMusicRenderState.loadingMore) return '';
   var label = searchMusicRenderState.loadingMore
@@ -1186,6 +1195,7 @@ function refreshSearchLoadMoreSentinel() {
 }
 function observeSearchLoadMoreSentinel() {
   disconnectSearchLoadMoreObserver();
+  if (searchMusicRenderState.manualMore) return;
   var sentinel = $results && $results.querySelector('[data-search-load-more]');
   if (!sentinel || !window.IntersectionObserver) return;
   var expectedKey = searchMusicRenderState.key;
@@ -1208,17 +1218,26 @@ async function loadNextMusicSearchPage(expectedKey) {
   var q = searchMusicRenderState.query;
   var mode = searchMusicRenderState.mode;
   try {
-    var page = await fetchMusicSearchResults(q, mode, searchMusicRenderState.providerPages);
-    if (requestSeq !== searchRequestSeq || expectedKey !== searchMusicRenderState.key || expectedKey !== searchLastResultQuery || searchMode !== mode || $input.value.trim() !== q) return false;
     var before = searchMusicRenderState.songs.length;
-    var merged = mergeUniqueSearchSongPools(searchMusicRenderState.songs, page.songs || []);
-    searchMusicRenderState.providerPages = page.providerPages || {};
-    searchMusicRenderState.songs = merged;
-    playlist = merged;
-    searchMusicRenderState.remoteHasMore = !!page.hasMore && merged.length < MUSIC_SEARCH_MAX_RESULTS;
-    if (merged.length === before) searchMusicRenderState.remoteHasMore = false;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      var previousPages = searchMusicRenderState.providerPages;
+      var page = await fetchMusicSearchResults(q, mode, previousPages);
+      if (requestSeq !== searchRequestSeq || expectedKey !== searchMusicRenderState.key || expectedKey !== searchLastResultQuery || searchMode !== mode || $input.value.trim() !== q) return false;
+      var merged = mergeUniqueSearchSongPools(searchMusicRenderState.songs, page.songs || []);
+      var nextPages = page.providerPages || {};
+      var advanced = Object.keys(nextPages).some(function (provider) {
+        var previous = (previousPages || {})[provider];
+        return nextPages[provider].hasMore && Number(nextPages[provider].nextOffset) > (Number(previous && previous.nextOffset) || 0);
+      });
+      searchMusicRenderState.providerPages = nextPages;
+      searchMusicRenderState.songs = merged;
+      playlist = merged;
+      searchMusicRenderState.remoteHasMore = !!page.hasMore && advanced && merged.length < MUSIC_SEARCH_MAX_RESULTS;
+      if (merged.length > before || !searchMusicRenderState.remoteHasMore) break;
+    }
     searchMusicRenderState.loadingMore = false;
-    if (merged.length > before) return appendNextSearchResults(expectedKey);
+    if (searchMusicRenderState.songs.length > before) return appendNextSearchResults(expectedKey);
+    searchMusicRenderState.manualMore = searchMusicRenderState.remoteHasMore;
     refreshSearchLoadMoreSentinel();
     return false;
   } catch (err) {
@@ -1230,6 +1249,10 @@ async function loadNextMusicSearchPage(expectedKey) {
     }
     return false;
   }
+}
+function resumeMusicSearchPagination() {
+  searchMusicRenderState.manualMore = false;
+  return loadNextMusicSearchPage(searchMusicRenderState.key);
 }
 function appendNextSearchResults(expectedKey) {
   expectedKey = expectedKey || searchMusicRenderState.key;

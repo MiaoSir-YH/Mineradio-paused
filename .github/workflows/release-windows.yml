@@ -1,40 +1,54 @@
-name: Build Windows release
+name: Build Windows installer
 
 on:
   push:
-    branches: [release/2.2.2]
-    paths: [.github/workflows/release-windows.yml]
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
         description: Existing release tag
         required: true
-        default: v2.2.2
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   installer:
     runs-on: windows-latest
     timeout-minutes: 20
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
     env:
-      RELEASE_TAG: ${{ inputs.tag || 'v2.2.2' }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
       GH_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - name: Validate release tag
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid release tag' }
-          $draft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft
-          if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw 'An existing draft release is required' }
+          $releaseJson = gh release view $env:RELEASE_TAG --json isDraft,isPrerelease
+          if ($LASTEXITCODE -ne 0) { throw 'An existing draft release is required' }
+          $release = $releaseJson | ConvertFrom-Json
+          if ($release.isDraft -ne $true) { throw 'An existing draft release is required' }
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          persist-credentials: false
+
+      - name: Record the checked-out source
+        id: source
+        shell: pwsh
+        run: |
+          $sourceCommit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve checked-out source' }
+          "sha=$sourceCommit" | Add-Content $env:GITHUB_OUTPUT
+          if ($env:GITHUB_EVENT_NAME -eq 'push' -and $sourceCommit -ne $env:GITHUB_SHA) { throw 'Checkout differs from pushed commit' }
 
       - uses: actions/setup-node@v4
         with:
@@ -63,7 +77,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          if ("v$version" -ne $env:RELEASE_TAG) { throw 'Tag and package version differ' }
+          if ($env:RELEASE_TAG -and "v$version" -ne $env:RELEASE_TAG) { throw 'Tag and package version differ' }
           $packaged = Get-Content dist/win-unpacked/resources/app/package.json -Raw | ConvertFrom-Json
           if ($packaged.version -ne $version) { throw 'Packaged version differs' }
           $sourceFiles = @(
@@ -99,7 +113,7 @@ jobs:
           $env:MINERADIO_STARTUP_QA_HIDDEN = '1'
           $env:MINERADIO_STARTUP_QA_EXIT_MS = '1800'
           $env:MINERADIO_NO_DESKTOP_SHORTCUT = '1'
-          $process = Start-Process -FilePath (Resolve-Path dist/win-unpacked/Mineradio.exe) -ArgumentList '--disable-gpu' -PassThru
+          $process = Start-Process -FilePath (Resolve-Path dist/win-unpacked/Mineradio.exe) -ArgumentList '--disable-gpu' -WindowStyle Hidden -PassThru
           if (!$process.WaitForExit(45000)) {
             Stop-Process -Id $process.Id -Force
             throw 'Application startup timed out'
@@ -134,9 +148,57 @@ jobs:
             workflowRun = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
           } | ConvertTo-Json -Depth 5 | Set-Content "dist/Mineradio-$version-build-info.json" -Encoding utf8
 
+      - name: Upload verified Windows build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mineradio-Windows-x64
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            dist/*-Setup.exe
+            dist/*-Setup.exe.sha256
+            dist/*-build-info.json
+            regression-tests.tap
+            native-media-smoke.log
+
+  publish-draft:
+    if: github.event_name == 'workflow_dispatch'
+    needs: installer
+    runs-on: windows-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.installer.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Download this run's verified Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: Mineradio-Windows-x64
+          path: .
+
       - name: Upload verified installer to the draft release
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          gh release upload $env:RELEASE_TAG "dist/Mineradio-$version-Setup.exe" "dist/Mineradio-$version-Setup.exe.sha256" "dist/Mineradio-$version-build-info.json" "docs/RELEASE_NOTES_v$version.md"
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or "v$version" -ne $env:RELEASE_TAG) { throw 'Invalid release version' }
+          # Recheck the channel immediately before upload in case the draft changed.
+          $releaseJson = gh release view $env:RELEASE_TAG --json isDraft,isPrerelease
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read target release' }
+          $release = $releaseJson | ConvertFrom-Json
+          if ($release.isDraft -ne $true) { throw 'Release is no longer a draft' }
+          $assets = @("dist/Mineradio-$version-Setup.exe", "dist/Mineradio-$version-Setup.exe.sha256", "dist/Mineradio-$version-build-info.json", "docs/RELEASE_NOTES_v$version.md")
+          if ($release.isPrerelease -eq $false) {
+            $releaseDate = [DateTime]::UtcNow.ToString('o')
+            "version: $version`nreleaseDate: '$releaseDate'`n" | Set-Content dist/latest.yml -Encoding utf8NoBOM
+            $assets += 'dist/latest.yml'
+          }
+          gh release upload $env:RELEASE_TAG @assets
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }

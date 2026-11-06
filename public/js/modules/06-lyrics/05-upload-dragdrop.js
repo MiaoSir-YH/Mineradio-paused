@@ -61,13 +61,22 @@ function isLocalPlaybackSnapshot(snapshot) {
   var song = snapshot && snapshot.current;
   return !!(song && (song.type === 'local' || song.source === 'local' || song.localKey || song.localFileId));
 }
+function localMusicTrackId(song) {
+  var id = String(song && (song.localFileId || song.localKey || song.id || song.key) || '').replace(/^local:/i, '');
+  return /^[a-f0-9]{24}$/i.test(id) ? id.toLowerCase() : id;
+}
+function findLocalMusicTrack(reference) {
+  var id = localMusicTrackId(reference);
+  if (!id) return null;
+  function matches(song) { return !!(song && song.localUrl && localMusicTrackId(song) === id); }
+  return persistentLocalLibraryTracks.find(matches) || playQueue.find(matches) || (matches(currentLocalSong) ? currentLocalSong : null);
+}
 function restoredLocalTrackIndex(tracks, snapshot) {
   var current = snapshot && snapshot.current || {};
-  var localId = String(current.localFileId || current.localKey || '').replace(/^local:/, '');
+  var localId = localMusicTrackId(current);
   if (localId) {
     for (var i = 0; i < tracks.length; i++) {
-      var songId = String(tracks[i].localFileId || tracks[i].localKey || '').replace(/^local:/, '');
-      if (songId === localId) return i;
+      if (localMusicTrackId(tracks[i]) === localId) return i;
     }
     return -1;
   }
@@ -266,21 +275,21 @@ function importLocalAudioSongs(songs, opts) {
   forcePlaybackControlsInteractive();
   updateEmptyHomeVisibility({ forceLoad: false });
   showToast(songs.length > 1 ? ('已导入 ' + songs.length + ' 首本地音乐') : '正在播放本地音乐');
-  Promise.resolve(playQueueAt(0, { manual: true })).then(function () {
-    if (opts.coverFile && currentIdx === 0 && playQueue[0]) {
-      loadCoverFromFile(opts.coverFile, { trackToken: trackSwitchToken, deferHeavy: false, delay: 0, timeout: 260 });
-    }
-  }).catch(function (e) { console.warn('[LocalImport]', e); });
+  var coverTarget = playQueue[0];
+  Promise.resolve(playQueueAt(0, { manual: true })).catch(function (e) { console.warn('[LocalImport]', e); });
+  if (opts.coverFile) {
+    loadCoverFromFile(opts.coverFile, { targetSong: coverTarget, deferHeavy: false, delay: 0, timeout: 260 });
+  }
   return true;
 }
-function handleCoverFiles(files) {
+function handleCoverFiles(files, targetSong) {
   finishUploadFilePicker(true);
   var imgFile = firstImageUploadFile(files);
   if (!imgFile) {
     showToast('没有找到可用的封面图片');
     return;
   }
-  loadCoverFromFile(imgFile, null);
+  loadCoverFromFile(imgFile, { targetSong: targetSong === undefined ? currentCoverSong() : targetSong });
   updateCustomCoverButton();
 }
 async function handleFiles(files, opts) {
@@ -322,7 +331,17 @@ async function handleFiles(files, opts) {
 var fileInput = document.getElementById('file-input');
 if (fileInput) fileInput.addEventListener('change', function (e) { handleFiles(e.target.files, { mode: 'audio' }); e.target.value = ''; });
 var coverInput = document.getElementById('cover-input');
-if (coverInput) coverInput.addEventListener('change', function (e) { handleCoverFiles(e.target.files); e.target.value = ''; });
+if (coverInput) {
+  var coverFilePickerTarget;
+  coverInput.addEventListener('click', function () { coverFilePickerTarget = currentCoverSong(); });
+  coverInput.addEventListener('cancel', function () { coverFilePickerTarget = undefined; });
+  coverInput.addEventListener('change', function (e) {
+    var target = coverFilePickerTarget;
+    coverFilePickerTarget = undefined;
+    handleCoverFiles(e.target.files, target);
+    e.target.value = '';
+  });
+}
 var folderInput = document.getElementById('folder-input');
 if (folderInput) folderInput.addEventListener('change', function (e) { handleFiles(e.target.files, { mode: 'folder' }); e.target.value = ''; });
 var lyricFontInput = document.getElementById('lyric-font-input');

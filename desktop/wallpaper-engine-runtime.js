@@ -1671,6 +1671,7 @@ class WallpaperEngineRuntime {
     this.engineReadyPidsKey = '';
     this.active = null;
     this.pending = null;
+    this.retiredSessions = new Map();
     this.generation = 0;
     this.disposed = false;
   }
@@ -3759,6 +3760,20 @@ class WallpaperEngineRuntime {
     }
   }
 
+  _scheduleRetiredSessionCleanup(session, attempt = 0) {
+    if (this.disposed || !session || this.retiredSessions.get(session.sessionId) !== session || session.retiredCleanupTimer) return;
+    const delays = [180, 600, 1500];
+    if (attempt >= delays.length) return;
+    session.retiredCleanupTimer = setTimeout(async () => {
+      session.retiredCleanupTimer = null;
+      if (this.retiredSessions.get(session.sessionId) !== session) return;
+      const closed = await this._closeSession(session).catch(() => false);
+      if (closed || !session.launched && !session.initialOpenPromise) this.retiredSessions.delete(session.sessionId);
+      else this._scheduleRetiredSessionCleanup(session, attempt + 1);
+    }, delays[attempt]);
+    if (session.retiredCleanupTimer.unref) session.retiredCleanupTimer.unref();
+  }
+
   async _closeSession(session) {
     if (!session) return false;
     if (!session.executable || !session.locationTitle) {
@@ -4023,7 +4038,11 @@ class WallpaperEngineRuntime {
       console.warn(`[Wallpaper Engine] native Scene start failed at ${startStage}:`, error && (error.code || error.message) || error);
       if (this.pending === session) this.pending = null;
       if (session.launched && (!this.active || this.active.sessionId !== session.sessionId)) {
-        await this._closeSession(session);
+        session.stopping = true;
+        this.retiredSessions.set(session.sessionId, session);
+        const closed = await this._closeSession(session).catch(() => false);
+        if (closed || !session.launched && !session.initialOpenPromise) this.retiredSessions.delete(session.sessionId);
+        else this._scheduleRetiredSessionCleanup(session);
       } else if (!session.launched) {
         await this._cleanupStagedProject(session);
       }
@@ -4039,7 +4058,8 @@ class WallpaperEngineRuntime {
     expectedSessionId = String(expectedSessionId || '');
     const matchesPending = !!(this.pending && this.pending.sessionId === expectedSessionId);
     const matchesActive = !!(this.active && this.active.sessionId === expectedSessionId);
-    if (expectedSessionId && !matchesPending && !matchesActive) {
+    const retired = this.retiredSessions.get(expectedSessionId);
+    if (expectedSessionId && !matchesPending && !matchesActive && !retired) {
       return { ok: true, stopped: false, reason: 'WALLPAPER_ENGINE_SESSION_MISMATCH' };
     }
 
@@ -4051,9 +4071,13 @@ class WallpaperEngineRuntime {
       if (matchesActive) {
         if (!sessions.length || sessions[0].sessionId !== this.active.sessionId) sessions.push(this.active);
       }
+      if (retired && !sessions.includes(retired)) sessions.push(retired);
     } else {
       if (this.pending) sessions.push(this.pending);
       if (this.active && (!this.pending || this.active.sessionId !== this.pending.sessionId)) sessions.push(this.active);
+      for (const session of this.retiredSessions.values()) {
+        if (!sessions.includes(session)) sessions.push(session);
+      }
     }
     if (!sessions.length) return { ok: true, stopped: false, active: !!this.active, sessionId: this.active ? this.active.sessionId : '' };
     // A targeted stop of the old active session must not supersede a newer
@@ -4064,14 +4088,18 @@ class WallpaperEngineRuntime {
     for (const session of sessions) session.stopping = true;
     let allStopped = true;
     for (const session of sessions) {
-      const closed = await this._closeSession(session);
+      if (session.retiredCleanupTimer) clearTimeout(session.retiredCleanupTimer);
+      session.retiredCleanupTimer = null;
+      const closed = await this._closeSession(session).catch(() => false);
       const safelyCancelled = !session.launched && !session.initialOpenPromise;
       if (closed || safelyCancelled) {
         if (this.pending === session) this.pending = null;
         if (this.active === session) this.active = null;
+        this.retiredSessions.delete(session.sessionId);
       } else {
         allStopped = false;
-        session.stopping = false;
+        session.stopping = this.retiredSessions.has(session.sessionId);
+        if (session.stopping) this._scheduleRetiredSessionCleanup(session);
         if (this.active === session) {
           this._scheduleSessionMuteReassertions(session);
           if (session.windowEmbedding && session.windowEmbedding.aligned === true
@@ -4091,7 +4119,7 @@ class WallpaperEngineRuntime {
   }
 
   async dispose() {
-    if (this.disposed) {
+    if (this.disposed && !this.active && !this.pending && !this.retiredSessions.size) {
       return {
         ok: !this.active && !this.pending,
         stopped: !this.active && !this.pending,
@@ -4101,7 +4129,7 @@ class WallpaperEngineRuntime {
       };
     }
     this.disposed = true;
-    const isClean = () => !this.active && !this.pending;
+    const isClean = () => !this.active && !this.pending && !this.retiredSessions.size;
     let result = await this.stop();
     if ((!result || result.stopped !== true) && !isClean()) {
       await this.nativeSleep(180);
@@ -4111,6 +4139,9 @@ class WallpaperEngineRuntime {
       const leftovers = [];
       if (this.pending) leftovers.push(this.pending);
       if (this.active && (!this.pending || this.active.sessionId !== this.pending.sessionId)) leftovers.push(this.active);
+      for (const session of this.retiredSessions.values()) {
+        if (!leftovers.includes(session)) leftovers.push(session);
+      }
       for (const session of leftovers) {
         this._stopSessionPointerRelay(session);
         this._stopSessionDwmSurface(session);

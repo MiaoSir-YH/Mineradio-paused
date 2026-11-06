@@ -59,6 +59,8 @@ const https = require('https');
 const fs   = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { createLocalRequestSecurity } = require('./desktop/local-request-security');
+const { openPublicMedia, pipeMedia, collectMedia } = require('./desktop/media-http');
 const tls = require('tls');
 const { fileURLToPath } = require('url');
 const { analyzePodcastDjStream, analyzePodcastDjIntro } = require('./dj-analyzer');
@@ -119,7 +121,16 @@ const {
 const { planCuefieldTransitionFromCache } = require('./cuefield/mineradio-bridge');
 
 const PORT = process.env.PORT || 3000;
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || '127.0.0.1';
+const localRequestSecurity = createLocalRequestSecurity({ standalone: require.main === module, host: HOST });
+const POST_ONLY_ROUTES = new Set([
+  '/api/logout', '/api/qq/logout', '/api/kugou/logout', '/api/qishui/logout',
+  '/api/login/cookie', '/api/qq/login/cookie', '/api/kugou/login/cookie',
+  '/api/login/qr/key', '/api/login/qr/create', '/api/login/qr/check',
+  '/api/qishui/login/qrcode', '/api/qishui/login/check',
+  '/api/song/like', '/api/playlist/create', '/api/playlist/add-song',
+  '/api/playlist/subscribe', '/api/album/subscribe', '/api/song/comments/like',
+]);
 const LOGIN_EASTER_EGG_GATE_FILE = String(process.env.MINERADIO_LOGIN_EASTER_EGG_GATE_FILE || '');
 const LOGIN_EASTER_EGG_GATE_VERSION = String(process.env.MINERADIO_LOGIN_EASTER_EGG_GATE_VERSION || 'world-peace-v1');
 const LOGIN_EASTER_EGG_PROTECTED_ROUTES = new Set([
@@ -149,8 +160,8 @@ const qishuiAudioDecryptCache = new Map();
 const QISHUI_AUDIO_DECRYPT_CACHE_MAX_BYTES = 96 * 1024 * 1024;
 let qishuiAudioDecryptCacheBytes = 0;
 const UPDATE_FALLBACK_NOTES = [
-  '本次下载入口已更换，请使用公告中的新网盘链接，并更新旧收藏。',
-  '修复音乐接口的登录、账号识别与播放稳定性问题。',
+  '更新与安装包仅通过当前项目的 GitHub Release 页面提供。',
+  '请以当前项目发布页中的版本说明为准。',
 ];
 const OPEN_METEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const OPEN_METEO_GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
@@ -340,7 +351,16 @@ function saveConfiguredCookieStore(store, value) {
   return store.value;
 }
 let userCookie = '';
+let neteaseSessionGeneration = 0;
+let neteaseQrGeneration = 0;
+let neteaseActiveQrKey = '';
+function invalidateNeteaseQr() {
+  neteaseQrGeneration += 1;
+  neteaseActiveQrKey = '';
+}
 function saveCookie(c) {
+  neteaseSessionGeneration += 1;
+  invalidateNeteaseQr();
   userCookie = saveConfiguredCookieStore(configuredCookieStores.netease, normalizeCookieHeader(c) || rawCookieFallback(c));
   clearNeteaseLoginInfoCache();
 }
@@ -359,14 +379,23 @@ function saveKugouCookie(c) {
 }
 
 let qishuiCookie = '';
+let qishuiSessionGeneration = 0;
 function saveQishuiCookie(c) {
+  qishuiSessionGeneration += 1;
   qishuiCookie = saveConfiguredCookieStore(configuredCookieStores.qishui, normalizeQishuiCookieInput(c) || normalizeCookieHeader(c) || rawCookieFallback(c));
 }
 function refreshConfiguredCookieStores(force) {
+  const previousNeteaseCookie = userCookie;
+  const previousQishuiCookie = qishuiCookie;
   userCookie = refreshConfiguredCookieStore(configuredCookieStores.netease, force);
   qqCookie = refreshConfiguredCookieStore(configuredCookieStores.qq, force);
   kugouCookie = refreshConfiguredCookieStore(configuredCookieStores.kugou, force);
   qishuiCookie = refreshConfiguredCookieStore(configuredCookieStores.qishui, force);
+  if (userCookie !== previousNeteaseCookie) {
+    neteaseSessionGeneration += 1;
+    invalidateNeteaseQr();
+  }
+  if (qishuiCookie !== previousQishuiCookie) qishuiSessionGeneration += 1;
 }
 function refreshQQConfiguredCookieStore(force) {
   qqCookie = refreshConfiguredCookieStore(configuredCookieStores.qq, force);
@@ -375,6 +404,10 @@ function refreshQQConfiguredCookieStore(force) {
 refreshConfiguredCookieStores(true);
 
 function clearAllRuntimeLoginCredentials(reason) {
+  neteaseSessionGeneration += 1;
+  invalidateNeteaseQr();
+  qishuiSessionGeneration += 1;
+  Promise.resolve(qishuiQrLogin.clear()).catch(() => {});
   userCookie = '';
   qqCookie = '';
   kugouCookie = '';
@@ -412,7 +445,7 @@ function serveStatic(res, filePath) {
 function sendJSON(res, data, status) {
   res.writeHead(status || 200, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
+    'X-Content-Type-Options': 'nosniff',
     'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
     'Pragma': 'no-cache',
     'Expires': '0',
@@ -438,7 +471,7 @@ function parseGitHubRepository(input) {
 }
 function readUpdateConfig(pkg) {
   const local = (pkg && pkg.mineradio && pkg.mineradio.update) || {};
-  const disabled = local.disabled === true || local.provider === 'none';
+  const disabled = local.disabled === true || !local.provider || local.provider === 'none';
   if (disabled) {
     return {
       provider: local.provider || 'none',
@@ -459,8 +492,8 @@ function readUpdateConfig(pkg) {
     || (pkg && pkg.repository && (pkg.repository.url || pkg.repository))
     || '';
   const parsed = parseGitHubRepository(repoHint) || {};
-  const owner = process.env.MINERADIO_UPDATE_OWNER || local.owner || parsed.owner || '';
-  const repo = process.env.MINERADIO_UPDATE_REPO || local.repo || parsed.repo || '';
+  const owner = local.owner || process.env.MINERADIO_UPDATE_OWNER || parsed.owner || '';
+  const repo = local.repo || process.env.MINERADIO_UPDATE_REPO || parsed.repo || '';
   return {
     provider: local.provider || 'github',
     owner,
@@ -470,7 +503,7 @@ function readUpdateConfig(pkg) {
     preview: local.preview !== false,
     preferMirrors: local.preferMirrors !== false,
     mirrors: readUpdateMirrors(local),
-    manifest: process.env.MINERADIO_UPDATE_MANIFEST
+    manifest: local.owner && local.repo ? '' : process.env.MINERADIO_UPDATE_MANIFEST
       || process.env.MINERADIO_UPDATE_MANIFEST_URL
       || process.env.MINERADIO_UPDATE_MANIFEST_FILE
       || '',
@@ -551,6 +584,12 @@ function compareVersions(a, b) {
     if (left < right) return -1;
   }
   return 0;
+}
+function configuredUpdateReleaseUrl(tagName) {
+  if (!UPDATE_CONFIG.configured || UPDATE_CONFIG.provider !== 'github' || UPDATE_CONFIG.disabled) return '';
+  const base = `https://github.com/${encodeURIComponent(UPDATE_CONFIG.owner)}/${encodeURIComponent(UPDATE_CONFIG.repo)}/releases`;
+  const tag = String(tagName || '').trim();
+  return tag ? `${base}/tag/${encodeURIComponent(tag)}` : base;
 }
 function cleanReleaseLine(line) {
   return String(line || '')
@@ -638,25 +677,10 @@ function normalizeManifestUpdateInfo(data) {
     || release.name
     || APP_VERSION
   ) || APP_VERSION;
-  const htmlUrl = safeExternalUpdateUrl(release.htmlUrl || release.html_url || data.htmlUrl || '');
-  const legacyExternalUrl = safeExternalUpdateUrl(
-    release.downloadPageUrl
-    || release.externalUrl
-    || data.downloadPageUrl
-    || data.externalUrl
-    || release.downloadUrl
-    || data.downloadUrl
-    || ''
-  );
-  const explicitPages = Array.isArray(release.downloadPages)
-    ? release.downloadPages
-    : (Array.isArray(data.downloadPages) ? data.downloadPages : null);
-  const downloadPages = normalizeUpdateDownloadPages(explicitPages || [], '网盘下载');
-  if (explicitPages === null && legacyExternalUrl) {
-    downloadPages.unshift({ label: '网盘下载', url: legacyExternalUrl });
-  }
-  const externalUrl = downloadPages.length ? downloadPages[0].url : '';
-  const downloadPageUrl = externalUrl || htmlUrl;
+  const htmlUrl = configuredUpdateReleaseUrl(release.tagName || release.tag_name || data.tagName || ('v' + latestVersion));
+  const downloadPages = [];
+  const externalUrl = htmlUrl;
+  const downloadPageUrl = htmlUrl;
   const notes = Array.isArray(release.notes) && release.notes.length
     ? release.notes.slice(0, 4).map(cleanReleaseLine).filter(Boolean)
     : (extractReleaseNotes(release.body || data.body).length ? extractReleaseNotes(release.body || data.body) : UPDATE_FALLBACK_NOTES);
@@ -772,6 +796,19 @@ function writeBeatMapCache(body) {
   return { ok: true, key: payload.key, savedAt: payload.savedAt, dir: path.dirname(file) };
 }
 function localUpdateFallback(reason, opts) {
+  if (UPDATE_CONFIG.disabled) {
+    return {
+      configured: false,
+      disabled: true,
+      provider: 'none',
+      preview: false,
+      updateAvailable: false,
+      currentVersion: APP_VERSION,
+      latestVersion: APP_VERSION,
+      release: null,
+      reason: 'UPDATES_DISABLED',
+    };
+  }
   opts = opts || {};
   const configured = !!(opts.configured != null ? opts.configured : false);
   return {
@@ -874,20 +911,41 @@ async function readStreamChunkWithTimeout(reader, timeoutMs) {
     if (timer) clearTimeout(timer);
   }
 }
-async function fetchTextFromCandidates(candidates, timeoutMs) {
+async function fetchTextFromCandidates(candidates, timeoutMs, validate) {
   const list = Array.isArray(candidates) && candidates.length ? candidates : [];
   const failures = [];
   for (let i = 0; i < list.length; i++) {
     const candidate = list[i];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs || 6500);
+    let reader;
     try {
-      const resp = await fetchWithTimeout(candidate.url, {
+      const resp = await fetch(candidate.url, {
         headers: { 'User-Agent': `Mineradio/${APP_VERSION}` },
-      }, timeoutMs || 6500);
+        signal: controller.signal,
+      });
       if (!resp.ok) throw updateError('HTTP_' + resp.status, 'HTTP ' + resp.status);
-      return { text: await resp.text(), candidate };
+      const maxBytes = 256 * 1024;
+      if (Number(resp.headers.get('content-length')) > maxBytes) throw updateError('UPDATE_METADATA_TOO_LARGE');
+      reader = resp.body.getReader();
+      const chunks = [];
+      let size = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) throw updateError('UPDATE_METADATA_TOO_LARGE');
+        chunks.push(Buffer.from(value));
+      }
+      const text = Buffer.concat(chunks, size).toString('utf8');
+      return { text, candidate, value: validate ? validate(text) : undefined };
     } catch (err) {
       const info = classifyUpdateError(err);
       failures.push(candidate.label + ': ' + info.reason);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      if (reader) { try { await reader.cancel(); } catch (_) {} }
     }
   }
   throw updateError('UPDATE_ALL_LINES_FAILED', failures.join('；') || 'All update lines failed');
@@ -899,9 +957,15 @@ function yamlScalar(text, key) {
   return match[1].trim().replace(/^['"]|['"]$/g, '');
 }
 function parseLatestYmlUpdateInfo(text, reason) {
-  const latestVersion = normalizeVersion(yamlScalar(text, 'version') || APP_VERSION) || APP_VERSION;
+  const rawVersion = yamlScalar(text, 'version');
+  if (!/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(rawVersion)) {
+    throw updateError('UPDATE_METADATA_INVALID', 'Missing or invalid release version');
+  }
+  const latestVersion = normalizeVersion(rawVersion);
   const releaseDate = yamlScalar(text, 'releaseDate');
-  const htmlUrl = `https://github.com/${UPDATE_CONFIG.owner}/${UPDATE_CONFIG.repo}/releases/tag/v${latestVersion}`;
+  if (releaseDate && !Number.isFinite(Date.parse(releaseDate))) throw updateError('UPDATE_METADATA_INVALID', 'Invalid release date');
+  const tagName = /^v/i.test(rawVersion) ? rawVersion : 'v' + rawVersion;
+  const htmlUrl = configuredUpdateReleaseUrl(tagName);
   return {
     configured: true,
     preview: false,
@@ -909,7 +973,7 @@ function parseLatestYmlUpdateInfo(text, reason) {
     currentVersion: APP_VERSION,
     latestVersion,
     release: {
-      tagName: 'v' + latestVersion,
+      tagName,
       name: 'Mineradio v' + latestVersion,
       version: latestVersion,
       publishedAt: releaseDate,
@@ -922,20 +986,21 @@ function parseLatestYmlUpdateInfo(text, reason) {
       patch: null,
       patchAvailable: false,
       summary: '发现新版本，请前往发布页面获取安装包。',
-      notes: ['更新入口已改为浏览器外部下载', 'Mineradio 不再在本地下载或应用补丁'],
+      notes: ['请前往当前项目的 GitHub Release 页面查看更新', 'Mineradio 不在本地下载或应用补丁'],
     },
     source: 'latest-yml',
     reason: reason || '',
   };
 }
 async function fetchLatestYmlUpdateInfo(reason) {
-  if (!UPDATE_CONFIG.configured || UPDATE_CONFIG.provider !== 'github') throw updateError('UPDATE_REPOSITORY_NOT_CONFIGURED');
+  if (UPDATE_CONFIG.disabled || !UPDATE_CONFIG.configured || UPDATE_CONFIG.provider !== 'github') throw updateError('UPDATE_REPOSITORY_NOT_CONFIGURED');
   const latestYmlUrl = `https://github.com/${encodeURIComponent(UPDATE_CONFIG.owner)}/${encodeURIComponent(UPDATE_CONFIG.repo)}/releases/latest/download/latest.yml`;
   const candidates = uniqueDownloadCandidates(latestYmlUrl);
-  const result = await fetchTextFromCandidates(candidates, 6500);
-  return parseLatestYmlUpdateInfo(result.text, reason);
+  const result = await fetchTextFromCandidates(candidates, 6500, text => parseLatestYmlUpdateInfo(text, reason));
+  return result.value;
 }
 async function fetchLatestUpdateInfo() {
+  if (UPDATE_CONFIG.disabled) return localUpdateFallback();
   if (UPDATE_CONFIG.manifest) return fetchManifestUpdateInfo(UPDATE_CONFIG.manifest);
   if (!UPDATE_CONFIG.configured || UPDATE_CONFIG.provider !== 'github') return localUpdateFallback();
   const apiUrl = `https://api.github.com/repos/${encodeURIComponent(UPDATE_CONFIG.owner)}/${encodeURIComponent(UPDATE_CONFIG.repo)}/releases/latest`;
@@ -955,10 +1020,10 @@ async function fetchLatestUpdateInfo() {
     }
     const data = await resp.json();
     const latestVersion = normalizeVersion(data.tag_name || data.name || APP_VERSION) || APP_VERSION;
-    const htmlUrl = safeExternalUpdateUrl(data.html_url || '');
-    const downloadPages = extractReleaseDownloadPages(data.body);
-    const externalUrl = downloadPages.length ? downloadPages[0].url : '';
-    const downloadPageUrl = externalUrl || htmlUrl;
+    const htmlUrl = configuredUpdateReleaseUrl(data.tag_name || ('v' + latestVersion));
+    const downloadPages = [];
+    const externalUrl = htmlUrl;
+    const downloadPageUrl = htmlUrl;
     const notes = extractReleaseNotes(data.body).length ? extractReleaseNotes(data.body) : UPDATE_FALLBACK_NOTES;
     return {
       configured: true,
@@ -2872,6 +2937,9 @@ function qishuiAudioCacheKey(cleanUrl, auth) {
 
 function rememberQishuiDecryptedAudio(key, payload) {
   if (!payload || !Buffer.isBuffer(payload.buffer)) return;
+  if (payload.buffer.length > QISHUI_AUDIO_DECRYPT_CACHE_MAX_BYTES) return;
+  const previous = qishuiAudioDecryptCache.get(key);
+  if (previous) qishuiAudioDecryptCacheBytes -= previous.buffer.length;
   qishuiAudioDecryptCache.set(key, Object.assign({ at: Date.now() }, payload));
   qishuiAudioDecryptCacheBytes += payload.buffer.length;
   while (qishuiAudioDecryptCacheBytes > QISHUI_AUDIO_DECRYPT_CACHE_MAX_BYTES && qishuiAudioDecryptCache.size > 1) {
@@ -2882,7 +2950,7 @@ function rememberQishuiDecryptedAudio(key, payload) {
   }
 }
 
-async function getQishuiDecryptedAudio(audioUrl) {
+async function getQishuiDecryptedAudio(audioUrl, signal) {
   const parsed = qishuiAudioAuthFromUrl(audioUrl);
   if (!parsed.auth) return null;
   const key = qishuiAudioCacheKey(parsed.cleanUrl, parsed.auth);
@@ -2891,9 +2959,12 @@ async function getQishuiDecryptedAudio(audioUrl) {
     cached.at = Date.now();
     return cached;
   }
-  const up = await fetch(parsed.cleanUrl, { headers: audioProxyHeadersFor(parsed.cleanUrl, '') });
-  if (!up.ok) throw new Error('Qishui encrypted audio fetch failed: HTTP ' + up.status);
-  const encryptedBuffer = Buffer.from(await up.arrayBuffer());
+  const up = await openPublicMedia(parsed.cleanUrl, { headers: audioProxyHeadersFor(parsed.cleanUrl, ''), signal });
+  if (up.statusCode !== 200) {
+    up.destroy();
+    throw new Error('Qishui encrypted audio fetch failed: HTTP ' + up.statusCode);
+  }
+  const encryptedBuffer = await collectMedia(up, QISHUI_AUDIO_DECRYPT_CACHE_MAX_BYTES);
   const result = qishuiAudioDecryptor.decrypt({ encryptedBuffer, spadeA: parsed.auth });
   const payload = {
     buffer: result.buffer,
@@ -2920,7 +2991,7 @@ function sendAudioBuffer(res, buffer, contentType, range) {
     }
     res.writeHead(206, {
       'Content-Type': contentType || 'audio/mp4',
-      'Access-Control-Allow-Origin': '*',
+      'X-Content-Type-Options': 'nosniff',
       'Accept-Ranges': 'bytes',
       'Content-Length': end - start + 1,
       'Content-Range': 'bytes ' + start + '-' + end + '/' + total,
@@ -2930,11 +3001,71 @@ function sendAudioBuffer(res, buffer, contentType, range) {
   }
   res.writeHead(200, {
     'Content-Type': contentType || 'audio/mp4',
-    'Access-Control-Allow-Origin': '*',
+    'X-Content-Type-Options': 'nosniff',
     'Accept-Ranges': 'bytes',
     'Content-Length': total,
   });
   res.end(buffer);
+}
+
+async function proxyMedia(req, res, mediaUrl, kind) {
+  const controller = new AbortController();
+  const close = () => controller.abort();
+  res.once('close', close);
+  const deadline = setTimeout(close, kind === 'cover' ? 20000 : String(mediaUrl).includes('#auth=') ? 45000 : 30 * 60 * 1000);
+  let upstream;
+  try {
+    if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
+      sendJSON(res, { error: 'INVALID_MEDIA_URL' }, 400);
+      return;
+    }
+    const range = req.headers.range || '';
+    if (range && !/^bytes=(?:\d+-\d*|-\d+)$/.test(range)) {
+      res.writeHead(416); res.end(); return;
+    }
+    res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+    if (kind === 'audio' && mediaUrl.includes('#auth=')) {
+      const decrypted = await getQishuiDecryptedAudio(mediaUrl, controller.signal);
+      if (controller.signal.aborted) return;
+      sendAudioBuffer(res, decrypted.buffer, decrypted.contentType, range);
+      return;
+    }
+    upstream = await openPublicMedia(mediaUrl, {
+      headers: kind === 'audio' ? audioProxyHeadersFor(mediaUrl, range) : { 'User-Agent': UA, Referer: 'https://music.163.com/' },
+      signal: controller.signal,
+    });
+    if (upstream.statusCode === 416 && kind === 'audio') {
+      const contentRange = upstream.headers['content-range'];
+      res.writeHead(416, contentRange ? { 'Content-Range': contentRange } : {});
+      res.end();
+      return;
+    }
+    if (![200, 206].includes(upstream.statusCode)) throw new Error('MEDIA_HTTP_' + upstream.statusCode);
+    const type = String(upstream.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    const binary = !type || type === 'application/octet-stream' || type === 'binary/octet-stream';
+    if (!(binary || (kind === 'cover' ? /^image\//.test(type) : /^audio\//.test(type) || ['video/mp4', 'application/ogg'].includes(type)))) {
+      throw new Error('MEDIA_CONTENT_TYPE_NOT_ALLOWED');
+    }
+    const headers = {
+      'Content-Type': kind === 'cover' ? (binary ? 'image/jpeg' : type) : audioContentTypeForUrl(mediaUrl, binary ? '' : type),
+      'Cache-Control': kind === 'cover' ? 'private, max-age=86400' : 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    };
+    if (kind === 'audio') headers['Accept-Ranges'] = 'bytes';
+    for (const key of ['content-length', 'content-range']) {
+      if (upstream.headers[key]) headers[key] = upstream.headers[key];
+    }
+    await pipeMedia(upstream, res, kind === 'cover' ? 16 * 1024 * 1024 : 2 * 1024 * 1024 * 1024, headers);
+  } catch (err) {
+    if (!res.destroyed && !res.writableEnded) {
+      if (res.headersSent) res.destroy();
+      else sendJSON(res, { error: 'MEDIA_UNAVAILABLE' }, controller.signal.aborted ? 504 : 502);
+    }
+  } finally {
+    clearTimeout(deadline);
+    res.removeListener('close', close);
+    if (upstream && !upstream.destroyed) upstream.destroy();
+  }
 }
 
 function audioContentTypeForUrl(audioUrl, upstreamType) {
@@ -4340,24 +4471,25 @@ function activeNeteaseVipPackage(pkg) {
   if (expire && expire < Date.now()) return false;
   return firstPositiveNumberFrom([pkg], ['vipLevel', 'vip_level', 'level', 'vipType', 'vip_type', 'vipCode', 'vip_code', 'status']) > 0;
 }
-async function fetchNeteaseVipInfo(userId) {
+async function fetchNeteaseVipInfo(userId, cookie = userCookie) {
   userId = String(userId || '').trim();
-  if (!userId || !userCookie) return null;
-  const cached = neteaseVipInfoCache.get(userId);
+  if (!userId || !cookie) return null;
+  const cacheKey = crypto.createHash('sha256').update(cookie).digest('hex') + ':' + userId;
+  const cached = neteaseVipInfoCache.get(cacheKey);
   if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.value;
   let body = null;
   try {
-    const r = await vip_info_v2({ uid: userId, cookie: userCookie, timestamp: Date.now() });
+    const r = await vip_info_v2({ uid: userId, cookie, timestamp: Date.now() });
     body = r && r.body ? r.body : r;
   } catch (e) {
     try {
-      const r = await vip_info({ uid: userId, cookie: userCookie, timestamp: Date.now() });
+      const r = await vip_info({ uid: userId, cookie, timestamp: Date.now() });
       body = r && r.body ? r.body : r;
     } catch (err) {
       console.warn('[Login] vip_info failed:', err.message);
     }
   }
-  if (body) neteaseVipInfoCache.set(userId, { at: Date.now(), value: body });
+  if (body && cookie === userCookie) neteaseVipInfoCache.set(cacheKey, { at: Date.now(), value: body });
   return body;
 }
 function normalizeNeteaseVip(profile, account, extra) {
@@ -4415,11 +4547,11 @@ function normalizeLoginInfo(profile, account, extra) {
     ...vip,
   };
 }
-async function enrichNeteaseLoginInfo(info, profile, account, extra) {
+async function enrichNeteaseLoginInfo(info, profile, account, extra, cookie = userCookie) {
   if (!info || !info.loggedIn || !info.userId) return info;
   let vipExtra = null;
   try {
-    vipExtra = await promiseWithTimeout(fetchNeteaseVipInfo(info.userId), 1800, 'NETEASE_VIP_INFO_TIMEOUT');
+    vipExtra = await promiseWithTimeout(fetchNeteaseVipInfo(info.userId, cookie), 1800, 'NETEASE_VIP_INFO_TIMEOUT');
   } catch (err) {
     console.warn('[Login] vip info timeout:', err.code || err.message);
   }
@@ -4434,27 +4566,29 @@ function isNeteaseAuthInvalidPayload(payload) {
   return /未登录|需要登录|请先登录|login/i.test(msg) && code >= 300;
 }
 async function fetchNeteaseLoginInfo() {
+  const cookie = userCookie;
+  const generation = neteaseSessionGeneration;
   if (!userCookie) return { loggedIn: false, vipType: 0, vipLevel: 'none', isVip: false, isSvip: false, vipLabel: '无VIP' };
 
   // login_status 对二维码 cookie 的资料刷新通常更及时；失败时再降级到 user_account。
   try {
-    const st = await promiseWithTimeout(login_status({ cookie: userCookie, timestamp: Date.now() }), 2400, 'NETEASE_LOGIN_STATUS_TIMEOUT');
+    const st = await promiseWithTimeout(login_status({ cookie, timestamp: Date.now() }), 2400, 'NETEASE_LOGIN_STATUS_TIMEOUT');
     const body = st.body || {};
     const data = body.data || body;
     const profile = data.profile || body.profile;
     const account = data.account || body.account;
     const info = normalizeLoginInfo(profile, account, data);
-    if (info.loggedIn) return await enrichNeteaseLoginInfo(info, profile, account, data);
+    if (info.loggedIn) return await enrichNeteaseLoginInfo(info, profile, account, data, cookie);
   } catch (e) {
     console.warn('[Login] login_status failed:', e.message);
   }
 
   try {
-    const acc = await promiseWithTimeout(user_account({ cookie: userCookie, timestamp: Date.now() }), 2400, 'NETEASE_ACCOUNT_STATUS_TIMEOUT');
+    const acc = await promiseWithTimeout(user_account({ cookie, timestamp: Date.now() }), 2400, 'NETEASE_ACCOUNT_STATUS_TIMEOUT');
     const body = acc.body || {};
     const info = normalizeLoginInfo(body.profile, body.account, body);
-    if (info.loggedIn) return await enrichNeteaseLoginInfo(info, body.profile, body.account, body);
-    if (isNeteaseAuthInvalidPayload(acc)) saveCookie('');
+    if (info.loggedIn) return await enrichNeteaseLoginInfo(info, body.profile, body.account, body, cookie);
+    if (generation === neteaseSessionGeneration && cookie === userCookie && isNeteaseAuthInvalidPayload(acc)) saveCookie('');
     return { loggedIn: false, hasCookie: !!userCookie, vipType: 0, vipLevel: 'none', isVip: false, isSvip: false, vipLabel: '无VIP' };
   } catch (e) {
     console.warn('[Login] account check failed:', e.message);
@@ -4469,19 +4603,21 @@ function clearNeteaseLoginInfoCache() {
 async function getLoginInfo() {
   if (!userCookie) return { loggedIn: false, vipType: 0, vipLevel: 'none', isVip: false, isSvip: false, vipLabel: '无VIP' };
   const cookieKey = userCookie;
+  const generation = neteaseSessionGeneration;
   if (neteaseLoginInfoCache.cookie === cookieKey && neteaseLoginInfoCache.value && Date.now() - neteaseLoginInfoCache.at < NETEASE_LOGIN_INFO_CACHE_TTL_MS) {
     return neteaseLoginInfoCache.value;
   }
   if (neteaseLoginInfoCache.cookie === cookieKey && neteaseLoginInfoCache.promise) return neteaseLoginInfoCache.promise;
   const request = fetchNeteaseLoginInfo().then(info => {
-    if (userCookie === cookieKey) {
+    if (generation !== neteaseSessionGeneration || userCookie !== cookieKey) return getLoginInfo();
+    if (userCookie === cookieKey && generation === neteaseSessionGeneration) {
       neteaseLoginInfoCache.cookie = cookieKey;
       neteaseLoginInfoCache.at = Date.now();
       neteaseLoginInfoCache.value = info;
     }
     return info;
   }).finally(() => {
-    if (neteaseLoginInfoCache.cookie === cookieKey) neteaseLoginInfoCache.promise = null;
+    if (neteaseLoginInfoCache.promise === request) neteaseLoginInfoCache.promise = null;
   });
   neteaseLoginInfoCache.cookie = cookieKey;
   neteaseLoginInfoCache.promise = request;
@@ -4653,10 +4789,35 @@ function loginEasterEggGateUnlocked() {
   }
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch(err => {
+    console.error('[Request]', err && (err.code || err.message));
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) res.destroy();
+    else sendJSON(res, { error: 'REQUEST_FAILED' }, 500);
+  });
+});
+
+async function handleRequest(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  const access = localRequestSecurity.inspect(req, server.address().port);
+  if (access.status) {
+    if (access.cookie) {
+      res.writeHead(303, { 'Set-Cookie': access.cookie, Location: access.location, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+      res.end();
+    } else sendJSON(res, { error: access.error }, access.status);
+    return;
+  }
   refreshConfiguredCookieStores(false);
-  const url = new URL(req.url, 'http://localhost:' + PORT);
+  const url = access.url;
   const pn = url.pathname;
+  if (POST_ONLY_ROUTES.has(pn) && req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    sendJSON(res, { error: 'METHOD_NOT_ALLOWED' }, 405);
+    return;
+  }
 
   if (pn === '/api/spotify' || pn.indexOf('/api/spotify/') === 0) {
     sendJSON(res, { ok: false, error: 'PROVIDER_REMOVED', message: '该平台接口已从 Mineradio 移除。' }, 404);
@@ -4679,6 +4840,7 @@ const server = http.createServer(async (req, res) => {
       productName: APP_PACKAGE.productName || 'Mineradio',
       version: APP_VERSION,
       update: {
+        disabled: UPDATE_CONFIG.disabled,
         provider: UPDATE_CONFIG.provider,
         configured: UPDATE_CONFIG.configured,
         owner: UPDATE_CONFIG.owner,
@@ -4780,9 +4942,9 @@ const server = http.createServer(async (req, res) => {
   ) {
     sendJSON(res, {
       ok: false,
-      externalOnly: true,
-      error: 'UPDATE_EXTERNAL_ONLY',
-      message: 'Mineradio 已停用客户端本地下载与快速补丁，请使用外部下载页面。',
+      disabled: true,
+      error: 'UPDATE_DISABLED',
+      message: '客户端安装包下载与补丁接口已停用。',
     }, 410);
     return;
   }
@@ -5286,6 +5448,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pn === '/api/qishui/login/qrcode') {
     try {
+      qishuiSessionGeneration += 1;
       const result = await qishuiQrLogin.createQrCode();
       const data = result && result.data || {};
       sendJSON(res, {
@@ -5311,6 +5474,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pn === '/api/qishui/login/check') {
     try {
+      const generation = qishuiSessionGeneration;
       const token = String(url.searchParams.get('token') || '').trim();
       if (!token) {
         sendJSON(res, {
@@ -5323,6 +5487,10 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const result = await qishuiQrLogin.checkQrConnect(token);
+      if (generation !== qishuiSessionGeneration) {
+        sendJSON(res, { provider: 'qishui', loggedIn: false, status: 'expired' });
+        return;
+      }
       const data = result && result.data || {};
       const errorCode = Number(data.error_code || 0);
       const bridgeStatus = qishuiQrLogin.getStatus();
@@ -5330,6 +5498,10 @@ const server = http.createServer(async (req, res) => {
         const cookie = qishuiQrLogin.getCookie();
         if (!qishuiCookieHasLogin(cookie)) throw new Error('QISHUI_QR_SESSION_COOKIE_MISSING');
         const status = await handleQishuiStatus(cookie);
+        if (generation !== qishuiSessionGeneration || qishuiQrLogin.getCookie() !== cookie || !qishuiQrLogin.getStatus().qrConfirmed) {
+          sendJSON(res, { provider: 'qishui', loggedIn: false, status: 'expired' });
+          return;
+        }
         if (status.reauthRequired) {
           sendJSON(res, { ...status, ok: false, status: 'reauth_required' });
           return;
@@ -5393,9 +5565,10 @@ const server = http.createServer(async (req, res) => {
 
   if (pn === '/api/qishui/logout') {
     try {
-      await qishuiQrLogin.clear();
       saveQishuiCookie('');
-      sendJSON(res, { ...clearQishuiAccessToken(), webSession: false, cookieReady: false, configured: getQishuiStatus('').configured, loggedIn: getQishuiStatus('').loggedIn });
+      clearQishuiAccessToken();
+      await qishuiQrLogin.clear();
+      sendJSON(res, { ok: true, provider: 'qishui', webSession: false, cookieReady: false, configured: getQishuiStatus('').configured, loggedIn: getQishuiStatus('').loggedIn });
     } catch (err) {
       console.error('[QishuiLogout]', err);
       sendJSON(res, { provider: 'qishui', ok: false, error: err.message }, 500);
@@ -6170,8 +6343,15 @@ const server = http.createServer(async (req, res) => {
 
   if (pn === '/api/login/qr/key') {
     try {
+      invalidateNeteaseQr();
+      const generation = neteaseQrGeneration;
       const r = await login_qr_key({ timestamp: Date.now() });
       const key = r.body && r.body.data && r.body.data.unikey;
+      if (generation !== neteaseQrGeneration) {
+        sendJSON(res, { error: 'QR_SUPERSEDED' }, 409);
+        return;
+      }
+      neteaseActiveQrKey = String(key || '');
       sendJSON(res, { key });
     } catch (err) { sendJSON(res, { error: err.message }, 500); }
     return;
@@ -6192,6 +6372,11 @@ const server = http.createServer(async (req, res) => {
   if (pn === '/api/login/qr/check') {
     try {
       const key = url.searchParams.get('key');
+      const generation = neteaseQrGeneration;
+      if (!key || key !== neteaseActiveQrKey) {
+        sendJSON(res, { code: 800, message: '二维码已过期，请刷新后重新扫码' });
+        return;
+      }
       let r = await login_qr_check({ key, noCookie: true, timestamp: Date.now() });
       let body = r.body || {};
       let code = Number(body.code || r.code);
@@ -6213,15 +6398,24 @@ const server = http.createServer(async (req, res) => {
         }
       }
       // 803 = 授权成功, 802 = 已扫待确认, 801 = 等待扫码, 800 = 二维码过期
+      if (generation !== neteaseQrGeneration || key !== neteaseActiveQrKey) {
+        sendJSON(res, { code: 800, message: '二维码已过期，请刷新后重新扫码' });
+        return;
+      }
       if (code === 803) {
         if (cookie) saveCookie(cookie);
+        const committedGeneration = neteaseSessionGeneration;
         let info = await getLoginInfo();
+        if (neteaseSessionGeneration !== committedGeneration) {
+          sendJSON(res, { code: 800, message: '登录状态已改变，请重新扫码' });
+          return;
+        }
         if (!info.loggedIn) {
           const profile = body.profile || (body.data && body.data.profile) || {};
           const account = body.account || (body.data && body.data.account);
           const extra = body.data || body;
           info = normalizeLoginInfo(profile, account, extra);
-          if (info.loggedIn) info = await enrichNeteaseLoginInfo(info, profile, account, extra);
+          if (info.loggedIn) info = await enrichNeteaseLoginInfo(info, profile, account, extra, cookie);
         }
         if (!info.loggedIn && cookie) {
           info = {
@@ -6235,6 +6429,10 @@ const server = http.createServer(async (req, res) => {
             isSvip: false,
             vipLabel: '无VIP',
           };
+        }
+        if (neteaseSessionGeneration !== committedGeneration) {
+          sendJSON(res, { code: 800, message: '登录状态已改变，请重新扫码' });
+          return;
         }
         sendJSON(res, { code, message: msg, ...info, hasCookie: !!cookie });
         return;
@@ -6253,8 +6451,9 @@ const server = http.createServer(async (req, res) => {
 
   // ---------- 登出 ----------
   if (pn === '/api/logout') {
-    try { await logout({ cookie: userCookie }); } catch (e) {}
+    const cookie = userCookie;
     saveCookie('');
+    try { await logout({ cookie }); } catch (e) {}
     sendJSON(res, { ok: true });
     return;
   }
@@ -6629,89 +6828,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 封面代理 (带 CORS 头, 给 canvas 提取像素用) ----------
+  // ---------- 同源媒体代理 ----------
   if (pn === '/api/cover') {
-    try {
-      const coverUrl = url.searchParams.get('url');
-      // URL 校验: 必须是 http(s) 开头, 否则直接 404 (不要让 fetch 抛错)
-      if (!coverUrl || !/^https?:\/\//i.test(coverUrl)) {
-        res.writeHead(400, { 'Access-Control-Allow-Origin': '*' });
-        res.end('Invalid cover url');
-        return;
-      }
-      const resp = await fetch(coverUrl, { headers: { 'User-Agent': UA, 'Referer': 'https://music.163.com/' } });
-      const ct  = resp.headers.get('content-type') || 'image/jpeg';
-      const cl  = resp.headers.get('content-length');
-      const hdr = {
-        'Content-Type': ct,
-        'Access-Control-Allow-Origin': '*',
-        'Cross-Origin-Resource-Policy': 'cross-origin',
-        'Cache-Control': 'public, max-age=86400',
-      };
-      if (cl) hdr['Content-Length'] = cl;
-      res.writeHead(resp.status, hdr);
-      const reader = resp.body.getReader();
-      while (true) { const c = await reader.read(); if (c.done) break; res.write(c.value); }
-      res.end();
-    } catch (err) { console.error('[Cover]', err); res.writeHead(500); res.end(); }
+    await proxyMedia(req, res, url.searchParams.get('url'), 'cover');
     return;
   }
 
   // ---------- 音频代理 (支持 Range) ----------
   if (pn === '/api/audio') {
-    try {
-      const audioUrl = url.searchParams.get('url');
-      if (!audioUrl) { res.writeHead(400); res.end('Missing url'); return; }
-      const range = req.headers.range || '';
-      if (audioUrl.includes('#auth=')) {
-        const decrypted = await getQishuiDecryptedAudio(audioUrl);
-        if (decrypted && decrypted.buffer) {
-          sendAudioBuffer(res, decrypted.buffer, decrypted.contentType, range);
-          return;
-        }
-      }
-      const hdr = audioProxyHeadersFor(audioUrl, range);
-      const up = await fetchWithTimeout(audioUrl, { headers: hdr }, 9000);
-      const out = {
-        'Content-Type': audioContentTypeForUrl(audioUrl, up.headers.get('content-type')),
-        'Access-Control-Allow-Origin': '*',
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-store',
-      };
-      const cl = up.headers.get('content-length'); if (cl) out['Content-Length'] = cl;
-      const cr = up.headers.get('content-range');  if (cr) out['Content-Range']  = cr;
-      res.writeHead(up.status, out);
-      if (!up.body) { res.end(); return; }
-      const reader = up.body.getReader();
-      let clientClosed = false;
-      const closeReader = () => {
-        clientClosed = true;
-        try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) {}
-      };
-      res.once('close', closeReader);
-      try {
-        while (!clientClosed) {
-          const c = await readStreamChunkWithTimeout(reader, 12000);
-          if (c.done) break;
-          res.write(c.value);
-        }
-      } finally {
-        res.removeListener('close', closeReader);
-        if (clientClosed) {
-          try { await reader.cancel(); } catch (_) {}
-        }
-      }
-      if (clientClosed) return;
-      res.end();
-    } catch (err) {
-      console.error('[Audio]', err && (err.code || err.name || err.message || 'AUDIO_PROXY_FAILED'));
-      if (res.headersSent) {
-        try { res.destroy(); } catch (_) {}
-      } else {
-        res.writeHead(err && err.name === 'AbortError' ? 504 : 502, { 'Cache-Control': 'no-store' });
-        res.end();
-      }
-    }
+    await proxyMedia(req, res, url.searchParams.get('url'), 'audio');
     return;
   }
 
@@ -6724,15 +6849,16 @@ const server = http.createServer(async (req, res) => {
   let filePath = pn === '/' ? '/index.html' : pn;
   filePath = path.join(__dirname, 'public', filePath);
   serveStatic(res, filePath);
-});
+}
 
 server.listen(PORT, HOST, () => {
   console.log('======================================================');
-  console.log(' 粒子音乐可视化 v2  →  http://localhost:' + PORT);
+  console.log(' 粒子音乐可视化 v2  →  ' + (localRequestSecurity.bootstrapUrl(server.address().port) || 'http://127.0.0.1:' + server.address().port));
   console.log(' 登录态: ' + (userCookie ? '已登录(cookie已加载)' : '未登录'));
   console.log('======================================================');
 });
 
 server.clearAllLoginCredentials = clearAllRuntimeLoginCredentials;
+server.getLocalRequestHeaders = localRequestSecurity.getHeaders;
 
 module.exports = server;

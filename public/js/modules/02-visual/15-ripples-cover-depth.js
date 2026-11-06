@@ -516,7 +516,7 @@ function setCoverDepthState(depthTo, aiTo, durationMs) {
 
 function coverApplyStillCurrent(opts) {
   opts = opts || {};
-  return !opts.trackToken || opts.trackToken === trackSwitchToken;
+  return opts.trackToken == null || opts.trackToken === trackSwitchToken;
 }
 
 function setControlCoverSrc(src) {
