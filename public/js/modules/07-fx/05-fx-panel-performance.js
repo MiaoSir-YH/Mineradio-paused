@@ -47,11 +47,12 @@ function setRange(id, value) {
   var out = el.parentElement.querySelector('output');
   if (out) out.textContent = id === 'fx-coverres'
     ? coverParticleCountLabel(value)
+    : id === 'fx-taskbarskylinespacing' ? Math.round(Number(value) * 100) + '%'
     : (id === 'fx-lyricweight' || id === 'fx-lyriccustomlines' || id === 'fx-glassaberration' || id === 'fx-playlistblur' || id === 'fx-bgcropx' || id === 'fx-bgcropy' || id === 'fx-lyrictiltx' || id === 'fx-lyrictilty' || id === 'fx-shelfangle' || id === 'fx-shelfdetailanglex' || id === 'fx-shelfdetailangley' || id === 'fx-memory-interval' || id === 'fx-memory-threshold' || /^fx-sonic(?!we)/.test(id) || id === 'fx-sonicwegain' ? String(Math.round(Number(value) || 0)) : Number(value).toFixed(id === 'fx-lyricspacing' ? 3 : 2));
 }
 function updateDevelopmentFxControls() {
   [
-    ['desktopLyrics', 't-desktopLyrics', '歌词显示总开关，可显示在桌面或任务栏'],
+    ['desktopLyrics', 't-desktopLyrics', '独立显示桌面歌词'],
     ['desktopLyricsClickThrough', 't-desktopLyricsClickThrough', '锁定后防误触；鼠标移到桌面歌词上按中键可锁定/解锁'],
     ['desktopLyricsCinema', 't-desktopLyricsCinema', '桌面歌词绑定鼓点电影震动，基础漂浮始终保留'],
     ['desktopLyricsHighlight', 't-desktopLyricsHighlight', '桌面歌词按播放进度高亮'],
@@ -98,6 +99,63 @@ function updateDevelopmentFxControls() {
 }
 var desktopLyricsDisplaysState = { supported: null, displays: [], loaded: false, error: false };
 var desktopLyricsDisplaysUnsubscribe = null;
+var desktopLyricsEditingDisplayId = null;
+function desktopLyricsDisplaysSignature(state) {
+  return JSON.stringify([state.supported, state.loaded, state.error, (state.displays || []).map(function (display) {
+    return [String(display.id), display.isPrimary === true, String(display.label || ''), display.taskbarAvailable !== false];
+  })]);
+}
+function desktopLyricsScreenFor(displayId, create) {
+  var outputs = ensureDesktopLyricsOutputs();
+  var screen = outputs.screens.find(function (entry) { return entry.displayId === displayId; });
+  if (!screen && create) {
+    var displays = desktopLyricsDisplaysState.displays || [];
+    var displayIndex = displays.findIndex(function (display) { return String(display.id) === displayId; });
+    screen = {
+      displayId: displayId, selected: false, position: normalizeDesktopLyricsTaskbarX(null),
+      size: 1, skylineSpacing: .5, opacity: layoutNumber(fx.desktopLyricsOpacity, fxDefaults.desktopLyricsOpacity, .28, 1),
+      style: 'follow', label: displayIndex < 0 ? '' : desktopLyricsDisplayLabel(displays[displayIndex], displayIndex)
+    };
+    outputs.screens.push(screen);
+  }
+  return screen || null;
+}
+function desktopLyricsDisplayLabel(display, index) {
+  return '屏幕 ' + (index + 1) + (display.isPrimary ? ' · 主屏' : ' · 副屏')
+    + (display.label ? ' · ' + String(display.label) : '')
+    + (display.taskbarAvailable === false ? '（无横向任务栏）' : '');
+}
+function desktopLyricsDisplayRows() {
+  var displays = desktopLyricsDisplaysState.displays || [];
+  var rows = displays.filter(function (display) { return /^-?\d{1,32}$/.test(String(display.id)); }).map(function (display, index) {
+    return { id: String(display.id), label: desktopLyricsDisplayLabel(display, index), available: display.taskbarAvailable !== false, online: true };
+  });
+  ensureDesktopLyricsOutputs().screens.forEach(function (screen) {
+    if (rows.some(function (row) { return row.id === screen.displayId; })) return;
+    rows.push({ id: screen.displayId, label: screen.displayId === '' ? '主显示屏（自动）' : (screen.label || '屏幕 ' + screen.displayId) + '（已离线）', available: true, online: false });
+  });
+  return rows;
+}
+function resolveDesktopLyricsAutoScreen() {
+  if (!desktopLyricsDisplaysState.loaded || desktopLyricsDisplaysState.error || (typeof desktopLyricsPositionAcksPending !== 'undefined' && desktopLyricsPositionAcksPending)) return false;
+  var primary = (desktopLyricsDisplaysState.displays || []).find(function (display) { return display.isPrimary && /^-?\d{1,32}$/.test(String(display.id)); });
+  var outputs = ensureDesktopLyricsOutputs();
+  if (!outputs.taskbarEnabled) return false;
+  var auto = outputs.screens.find(function (entry) { return entry.displayId === '' && entry.selected; });
+  if (!primary || !auto) return false;
+  var id = String(primary.id);
+  var explicit = outputs.screens.find(function (entry) { return entry.displayId === id; });
+  if (explicit) {
+    explicit.selected = true;
+    outputs.screens = outputs.screens.filter(function (entry) { return entry !== auto; });
+  } else {
+    auto.displayId = id;
+    auto.label = desktopLyricsDisplayLabel(primary, (desktopLyricsDisplaysState.displays || []).indexOf(primary));
+  }
+  if (desktopLyricsEditingDisplayId === '') desktopLyricsEditingDisplayId = id;
+  saveLyricLayout({ user: true, reason: 'desktopLyricsOutputs', syncDisk: true });
+  return true;
+}
 function setDesktopLyricsDisplayOptionLabel(option, label) {
   var text = document.createElement('span');
   text.className = 'desktop-lyrics-display-name';
@@ -106,51 +164,115 @@ function setDesktopLyricsDisplayOptionLabel(option, label) {
   option.title = label;
 }
 function updateDesktopLyricsDisplayControls() {
+  var resolved = resolveDesktopLyricsAutoScreen();
+  if (resolved && typeof applyDesktopLyricsState === 'function') applyDesktopLyricsState(true);
   var toggle = document.getElementById('t-desktopLyricsTaskbar');
   var unavailable = desktopLyricsDisplaysState.supported === false;
+  var outputs = ensureDesktopLyricsOutputs();
   if (toggle) {
-    var locked = unavailable && fx.desktopLyricsTaskbar !== true;
+    var locked = unavailable && outputs.taskbarEnabled !== true;
     toggle.classList.toggle('dev-locked', locked);
     if (locked) toggle.setAttribute('aria-disabled', 'true');
     else toggle.removeAttribute('aria-disabled');
-    toggle.title = unavailable ? '当前系统不支持任务栏歌词' : '开启后将歌词显示在 Windows 任务栏区域；关闭后恢复桌面歌词';
+    toggle.title = unavailable ? '当前系统不支持任务栏歌词' : '独立显示在所选 Windows 任务栏，不影响桌面歌词';
+  }
+  var rows = desktopLyricsDisplayRows();
+  if (!rows.some(function (row) { return row.id === desktopLyricsEditingDisplayId; })) {
+    var chosen = outputs.screens.find(function (screen) { return screen.selected; });
+    desktopLyricsEditingDisplayId = chosen && rows.some(function (row) { return row.id === chosen.displayId; }) ? chosen.displayId : (rows[0] ? rows[0].id : null);
+  }
+  var list = document.getElementById('desktop-lyrics-display-options');
+  if (list) {
+    list.textContent = '';
+    rows.forEach(function (row) {
+      var screen = desktopLyricsScreenFor(row.id, false);
+      var item = document.createElement('label');
+      item.className = 'fx-toggle desktop-lyrics-display-row';
+      item.title = row.label;
+      var checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = !!(screen && screen.selected);
+      checkbox.disabled = (unavailable || !row.available) && !checkbox.checked;
+      checkbox.setAttribute('data-display-id', row.id);
+      checkbox.setAttribute('aria-label', row.label);
+      item.classList.toggle('on', checkbox.checked);
+      item.classList.toggle('dev-locked', checkbox.disabled);
+      item.classList.toggle('is-editing', row.id === desktopLyricsEditingDisplayId);
+      checkbox.addEventListener('change', function () {
+        var restoreFocus = document.activeElement === checkbox;
+        var next = desktopLyricsScreenFor(row.id, true);
+        next.selected = checkbox.checked;
+        if (row.online) next.label = row.label;
+        var primary = (desktopLyricsDisplaysState.displays || []).find(function (display) { return display.isPrimary; });
+        if (next.selected && primary) {
+          var otherId = row.id === '' ? String(primary.id) : (row.id === String(primary.id) ? '' : null);
+          var duplicate = otherId == null ? null : desktopLyricsScreenFor(otherId, false);
+          if (duplicate) duplicate.selected = false;
+        }
+        desktopLyricsEditingDisplayId = row.id;
+        saveLyricLayout({ user: true, reason: 'desktopLyricsOutputs' });
+        updateDesktopLyricsDisplayControls();
+        if (restoreFocus) {
+          var replacement = Array.prototype.find.call(list.querySelectorAll('input[data-display-id]'), function (input) {
+            return input.getAttribute('data-display-id') === desktopLyricsEditingDisplayId;
+          });
+          if (replacement) replacement.focus();
+        }
+        applyDesktopLyricsState(true);
+      });
+      var text = document.createElement('span');
+      text.className = 'desktop-lyrics-display-text';
+      text.textContent = row.label;
+      var editing = document.createElement('small');
+      editing.className = 'desktop-lyrics-display-editing';
+      editing.textContent = row.id === desktopLyricsEditingDisplayId ? '配置中' : '';
+      var dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.setAttribute('aria-hidden', 'true');
+      item.appendChild(checkbox);
+      item.appendChild(text);
+      item.appendChild(editing);
+      item.appendChild(dot);
+      list.appendChild(item);
+    });
+    if (!rows.length) {
+      var empty = document.createElement('div');
+      empty.className = 'desktop-lyrics-display-empty';
+      empty.textContent = desktopLyricsDisplaysState.error ? '屏幕列表暂时不可用' : '暂无可用屏幕';
+      list.appendChild(empty);
+    }
   }
   var select = document.getElementById('desktop-lyrics-display');
   if (!select) return;
-  var selected = fx.desktopLyricsTaskbarDisplayId == null ? '' : String(fx.desktopLyricsTaskbarDisplayId);
-  var displays = desktopLyricsDisplaysState.displays || [];
   select.textContent = '';
-  var auto = document.createElement('option');
-  auto.value = '';
-  setDesktopLyricsDisplayOptionLabel(auto, '主显示屏（自动）');
-  select.appendChild(auto);
-  var found = !selected;
-  var selectedLabel = auto.textContent;
-  displays.forEach(function (display, index) {
-    var id = String(display.id == null ? '' : display.id);
-    if (!id) return;
+  var selectedLabel = '';
+  rows.forEach(function (row) {
     var option = document.createElement('option');
-    option.value = id;
-    var label = '屏幕 ' + (index + 1) + (display.isPrimary ? ' · 主屏' : ' · 副屏')
-      + (display.label ? ' · ' + String(display.label) : '')
-      + (display.taskbarAvailable === false ? '（无横向任务栏）' : '');
-    setDesktopLyricsDisplayOptionLabel(option, label);
-    option.disabled = display.taskbarAvailable === false && id !== selected;
+    option.value = row.id;
+    setDesktopLyricsDisplayOptionLabel(option, row.label);
     select.appendChild(option);
-    if (id === selected) { found = true; selectedLabel = option.textContent; }
+    if (row.id === desktopLyricsEditingDisplayId) selectedLabel = row.label;
   });
-  if (!found) {
-    var missing = document.createElement('option');
-    missing.value = selected;
-    setDesktopLyricsDisplayOptionLabel(missing, '已选屏幕暂不可用（' + selected + '）');
-    select.appendChild(missing);
-    selectedLabel = missing.textContent;
-  }
-  select.value = selected;
-  select.disabled = unavailable;
+  select.value = desktopLyricsEditingDisplayId == null ? '' : desktopLyricsEditingDisplayId;
+  select.disabled = !rows.length;
   select.title = selectedLabel + (desktopLyricsDisplaysState.error ? '（屏幕列表暂时不可用，已保留原设置）' : '');
+  var editing = desktopLyricsEditingDisplayId == null ? null : desktopLyricsScreenFor(desktopLyricsEditingDisplayId, false);
+  setRange('fx-taskbarlyricssize', editing ? editing.size : 1);
+  setRange('fx-taskbarskylinespacing', editing ? editing.skylineSpacing : .5);
+  setRange('fx-taskbarlyricsopacity', editing ? editing.opacity : fx.desktopLyricsOpacity);
+  ['fx-taskbarlyricssize', 'fx-taskbarskylinespacing', 'fx-taskbarlyricsopacity'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.disabled = desktopLyricsEditingDisplayId == null;
+  });
+  document.querySelectorAll('#taskbar-lyrics-style-seg [data-taskbar-lyrics-style]').forEach(function (button) {
+    var active = button.getAttribute('data-taskbar-lyrics-style') === (editing ? editing.style : 'follow');
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.disabled = desktopLyricsEditingDisplayId == null;
+  });
 }
 function applyDesktopLyricsDisplays(result) {
+  var previousSignature = desktopLyricsDisplaysSignature(desktopLyricsDisplaysState);
   if (!result || result.ok !== true) {
     desktopLyricsDisplaysState.error = true;
     if (result && result.supported === false) desktopLyricsDisplaysState.supported = false;
@@ -162,20 +284,46 @@ function applyDesktopLyricsDisplays(result) {
       error: false
     };
   }
+  if (previousSignature === desktopLyricsDisplaysSignature(desktopLyricsDisplaysState)) return;
+  var resolved = resolveDesktopLyricsAutoScreen();
   updateDesktopLyricsDisplayControls();
+  if (resolved && typeof applyDesktopLyricsState === 'function') applyDesktopLyricsState(true);
 }
 function initDesktopLyricsDisplays() {
   var select = document.getElementById('desktop-lyrics-display');
   if (select && !select._desktopLyricsBound) {
     select._desktopLyricsBound = true;
     select.addEventListener('change', function () {
-      fx.desktopLyricsTaskbarDisplayId = String(select.value || '');
-      var option = select.options[select.selectedIndex];
-      if (option) select.title = option.textContent + (desktopLyricsDisplaysState.error ? '（屏幕列表暂时不可用，已保留原设置）' : '');
-      saveLyricLayout({ user: true, reason: 'desktopLyricsTaskbarDisplayId' });
-      pushDesktopLyricsState(true);
+      desktopLyricsEditingDisplayId = String(select.value || '');
+      updateDesktopLyricsDisplayControls();
     });
   }
+  [['fx-taskbarlyricssize', 'size'], ['fx-taskbarskylinespacing', 'skylineSpacing'], ['fx-taskbarlyricsopacity', 'opacity']].forEach(function (pair) {
+    var el = document.getElementById(pair[0]);
+    if (!el || el._desktopLyricsBound) return;
+    el._desktopLyricsBound = true;
+    el.addEventListener('input', function () {
+      if (desktopLyricsEditingDisplayId == null) return;
+      var screen = desktopLyricsScreenFor(desktopLyricsEditingDisplayId, true);
+      screen[pair[1]] = pair[1] === 'size' ? normalizeDesktopLyricsTaskbarSize(el.value)
+        : pair[1] === 'skylineSpacing' ? normalizeDesktopLyricsTaskbarSkylineSpacing(el.value)
+        : layoutNumber(el.value, fxDefaults.desktopLyricsOpacity, .28, 1);
+      setRange(pair[0], screen[pair[1]]);
+      scheduleLyricLayoutSave(360, { user: true, reason: 'desktopLyricsOutputs' });
+      pushDesktopLyricsState(true);
+    });
+  });
+  document.querySelectorAll('#taskbar-lyrics-style-seg [data-taskbar-lyrics-style]').forEach(function (button) {
+    if (button._desktopLyricsBound) return;
+    button._desktopLyricsBound = true;
+    button.addEventListener('click', function () {
+      if (desktopLyricsEditingDisplayId == null) return;
+      desktopLyricsScreenFor(desktopLyricsEditingDisplayId, true).style = button.getAttribute('data-taskbar-lyrics-style');
+      saveLyricLayout({ user: true, reason: 'desktopLyricsOutputs' });
+      updateDesktopLyricsDisplayControls();
+      applyDesktopLyricsState(true);
+    });
+  });
   var api = typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : null;
   if (!api || typeof api.getDesktopLyricsDisplays !== 'function') {
     desktopLyricsDisplaysState.supported = false;
@@ -463,7 +611,7 @@ function updateFxInputs() {
   var desktopLyricsToggle = document.getElementById('t-desktopLyrics');
   if (desktopLyricsToggle) desktopLyricsToggle.classList.toggle('on', fx.desktopLyrics);
   var desktopLyricsTaskbarToggle = document.getElementById('t-desktopLyricsTaskbar');
-  if (desktopLyricsTaskbarToggle) desktopLyricsTaskbarToggle.classList.toggle('on', fx.desktopLyricsTaskbar === true);
+  if (desktopLyricsTaskbarToggle) desktopLyricsTaskbarToggle.classList.toggle('on', ensureDesktopLyricsOutputs().taskbarEnabled === true);
   var desktopLyricsClickToggle = document.getElementById('t-desktopLyricsClickThrough');
   if (desktopLyricsClickToggle) desktopLyricsClickToggle.classList.toggle('on', fx.desktopLyricsClickThrough !== false);
   var desktopLyricsCinemaToggle = document.getElementById('t-desktopLyricsCinema');
@@ -920,6 +1068,8 @@ function relabelFxPanelControls() {
   setFxSliderLabel('fx-lyrictiltx', '上下旋转');
   setFxSliderLabel('fx-lyrictilty', '左右旋转');
   setFxSliderLabel('fx-desktoplyricssize', '桌面歌词大小');
+  setFxSliderLabel('fx-taskbarlyricssize', '任务栏歌词大小');
+  setFxSliderLabel('fx-taskbarskylinespacing', '词云与歌词间距');
   setFxSliderLabel('fx-desktoplyricsopacity', '桌面歌词透明度');
   setFxSliderLabel('fx-desktoplyricsy', '桌面歌词高度');
   setFxSliderLabel('fx-wallpaperopacity', '壁纸透明度');

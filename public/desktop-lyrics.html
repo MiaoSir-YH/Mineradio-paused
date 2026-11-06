@@ -181,7 +181,8 @@
     .stage.hint-visible .lock-hint{opacity:.94;transform:translateX(-50%) translateY(0) scale(1)}
     body.taskbar .lock-hint{display:none!important}
     body.taskbar .wrap{inset:auto;left:50%;top:50%;transform-origin:center}
-    body.taskbar .stage{pointer-events:none;cursor:default}
+    body.taskbar .stage{pointer-events:none;cursor:default;padding-left:0;padding-right:0}
+    body.taskbar .lyric-viewport{-webkit-mask-image:none;mask-image:none;padding-left:0;padding-right:0}
     body.taskbar .lyric-scroll{white-space:nowrap}
     body.taskbar.taskbar-hover{cursor:grab}
     body.taskbar.taskbar-dragging{cursor:grabbing}
@@ -249,7 +250,7 @@
     var state = {
       enabled:false,text:'Mineradio',progress:0,progressSpan:4.8,progressReceivedAt:0,playing:false,
       playbackTime:0,playbackDuration:0,playbackRate:1,playbackReceivedAt:0,beatMapKey:'',
-      size:1,opacity:.92,clickThrough:true,taskbarMode:false,lyricGlowParticles:false,cinema:true,highlightFollow:false,frameRate:60,
+      size:1,taskbarSize:1,taskbarSkylineSpacing:.5,opacity:.92,clickThrough:true,taskbarMode:false,lyricGlowParticles:false,cinema:true,highlightFollow:false,frameRate:60,
       lyricGlow:true,lyricGlowBeat:true,lyricGlowStrength:.35,highBloom:0,beatGlow:0,beatPulse:0,bass:0,feather:.055,
       fontFamily:'Inter,"Noto Sans SC","PingFang SC","Microsoft YaHei",Arial,sans-serif',
       customFont:null,
@@ -424,6 +425,10 @@
       if (want && !skyline.inst) skyline.inst = MineradioSkyline.create(document.getElementById('skyline'), { opaque: false, taskbar: state.taskbarMode });
       if (skyline.inst) {
         if (typeof skyline.inst.setTaskbarMode === 'function') skyline.inst.setTaskbarMode(state.taskbarMode);
+        if (typeof skyline.inst.setLyricSizeScale === 'function') skyline.inst.setLyricSizeScale(state.taskbarMode ? state.taskbarSize : clamp(state.size, .20, 1.55, 1));
+        if (typeof skyline.inst.setTaskbarCloudSpacing === 'function') skyline.inst.setTaskbarCloudSpacing(state.taskbarSkylineSpacing);
+        if (typeof skyline.inst.setTaskbarGeometry === 'function') skyline.inst.setTaskbarGeometry(state.taskbarMode && state.taskbarReferenceWidth != null && state.taskbarAnchorX != null
+          ? { referenceWidth:state.taskbarReferenceWidth, anchorX:state.taskbarAnchorX, viewportWidth:state.taskbarViewportWidth } : null);
         var nextPad = state.taskbarMode ? 0 : .25;
         if (skyline.inst.pad !== nextPad) {
           skyline.inst.pad = nextPad;
@@ -653,10 +658,12 @@
       }
       var safeWidth = Math.max(300, layoutWidth - 8);
       var edgeWidth = Math.round(clamp(safeWidth * .085, 54, 116, 92));
-      var viewportWidth = Math.round(Math.max(280, Math.min(safeWidth - 12, layoutWidth - Math.min(240, Math.max(88, layoutWidth * .13)))));
-      var clearWidth = Math.max(160, viewportWidth - edgeWidth * 2);
+      var viewportWidth = state.taskbarMode
+        ? Math.round(Math.max(280, safeWidth - 24 / taskbarScale))
+        : Math.round(Math.max(280, Math.min(safeWidth - 12, layoutWidth - Math.min(240, Math.max(88, layoutWidth * .13)))));
+      var clearWidth = state.taskbarMode ? viewportWidth : Math.max(160, viewportWidth - edgeWidth * 2);
       var readableWidth = clearWidth;
-      var maxHeight = Math.max(64, layoutHeight - 188);
+      var maxHeight = state.taskbarMode ? Math.max(1, layoutHeight * .73) : Math.max(64, layoutHeight - 188);
       var nextLayoutKey = [
         state.taskbarMode,
         line.textContent || '',
@@ -679,45 +686,56 @@
       setRootVar('--lyric-edge-width', edgeWidth + 'px');
       var size = baseFontSize;
       fitScaleX = 1;
-      var minSize = Math.min(baseFontSize, Math.max(12, Math.min(32, baseFontSize * .55)));
       if (state.taskbarMode) {
-        var taskbarMinSize = Math.min(12, Math.max(1, innerHeight * .75)) / taskbarScale;
-        size = Math.max(size, taskbarMinSize);
-        minSize = Math.max(minSize, taskbarMinSize);
-      }
-      var maxScrollableWidth = readableWidth * 1.76;
-      for (var i = 0; i < 24; i++) {
-        var width = measureLineWidth(size);
-        var height = size * state.lineHeight;
-        if ((width <= maxScrollableWidth && height <= maxHeight) || size <= minSize) break;
-        size = Math.max(minSize, size - Math.max(1.25, size * .062));
-      }
-      var measuredWidth = measureLineWidth(size);
-      var maxRenderedWidth = readableWidth * 1.82;
-      if (measuredWidth > maxRenderedWidth) {
-        fitScaleX = clamp(maxRenderedWidth / measuredWidth, .72, 1, 1);
-      }
-      var scaledWidth = measuredWidth * fitScaleX;
-      var travelWidth = Math.max(0, scaledWidth - clearWidth);
-      var clearTailMargin = Math.max(58, Math.min(edgeWidth * 1.18, size * 1.08));
-      var centeredTailLimit = scaledWidth > clearWidth * 1.28 ? Math.max(0, scaledWidth / 2 - clearWidth * .18) : 0;
-      scrollState.limit = travelWidth > 0 ? Math.max(travelWidth / 2 + clearTailMargin, centeredTailLimit) : 0;
-      scrollState.overflow = scrollState.limit * 2;
-      scrollState.needed = travelWidth > Math.max(16, size * .18);
-      var maskEdgeWidth = scrollState.needed ? Math.round(clamp(edgeWidth * .44, 26, 58, 42)) : edgeWidth;
-      if (!scrollState.needed) {
+        // Keep original and translation fully visible together. Shrink the
+        // font uniformly instead of horizontally clipping or scrolling.
+        var fullWidth = measureLineWidth(size);
+        // Reserve the maximum ordinary stage pulse (1.23575 at the legal
+        // beat/glow/bass limits), plus the existing space for horizontal bob.
+        var availableWidth = Math.max(1, clearWidth - 20 / taskbarScale) / 1.24;
+        var fit = Math.min(1, availableWidth / fullWidth, maxHeight / (size * state.lineHeight));
+        size = Math.max(1, size * fit);
+        scrollState.needed = false;
+        scrollState.limit = 0;
+        scrollState.overflow = 0;
         scrollState.offset = 0;
         scrollState.dir = -1;
         scrollState.holdUntil = 0;
         scrollState.lastAt = 0;
       } else {
-        var limit = scrollState.limit || scrollState.overflow / 2;
-        if (!isFinite(scrollState.offset) || Math.abs(scrollState.offset) > limit + 8) {
+        var minSize = Math.min(baseFontSize, Math.max(12, Math.min(32, baseFontSize * .55)));
+        var maxScrollableWidth = readableWidth * 1.76;
+        for (var i = 0; i < 24; i++) {
+          var width = measureLineWidth(size);
+          var height = size * state.lineHeight;
+          if ((width <= maxScrollableWidth && height <= maxHeight) || size <= minSize) break;
+          size = Math.max(minSize, size - Math.max(1.25, size * .062));
+        }
+        var measuredWidth = measureLineWidth(size);
+        var maxRenderedWidth = readableWidth * 1.82;
+        if (measuredWidth > maxRenderedWidth) fitScaleX = clamp(maxRenderedWidth / measuredWidth, .72, 1, 1);
+        var scaledWidth = measuredWidth * fitScaleX;
+        var travelWidth = Math.max(0, scaledWidth - clearWidth);
+        var clearTailMargin = Math.max(58, Math.min(edgeWidth * 1.18, size * 1.08));
+        var centeredTailLimit = scaledWidth > clearWidth * 1.28 ? Math.max(0, scaledWidth / 2 - clearWidth * .18) : 0;
+        scrollState.limit = travelWidth > 0 ? Math.max(travelWidth / 2 + clearTailMargin, centeredTailLimit) : 0;
+        scrollState.overflow = scrollState.limit * 2;
+        scrollState.needed = travelWidth > Math.max(16, size * .18);
+        if (!scrollState.needed) {
           scrollState.offset = 0;
           scrollState.dir = -1;
-          scrollState.holdUntil = performance.now() + lyricScrollInitialHoldMs();
+          scrollState.holdUntil = 0;
+          scrollState.lastAt = 0;
+        } else {
+          var limit = scrollState.limit || scrollState.overflow / 2;
+          if (!isFinite(scrollState.offset) || Math.abs(scrollState.offset) > limit + 8) {
+            scrollState.offset = 0;
+            scrollState.dir = -1;
+            scrollState.holdUntil = performance.now() + lyricScrollInitialHoldMs();
+          }
         }
       }
+      var maskEdgeWidth = scrollState.needed ? Math.round(clamp(edgeWidth * .44, 26, 58, 42)) : edgeWidth;
       renderedFontSize = Math.round(size * 100) / 100;
       setRootVar('--lyric-size', renderedFontSize + 'px');
       setRootVar('--lyric-vertical-feather', Math.round(clamp(renderedFontSize * .92, 38, 72, 46)) + 'px');
@@ -900,8 +918,17 @@
       next = next || {};
       var previousTaskbarMode = state.taskbarMode === true;
       var previousTaskbarDisplayId = String(state.taskbarDisplayId || '');
+      var previousTaskbarSize = state.taskbarSize;
+      var previousTaskbarSkylineSpacing = state.taskbarSkylineSpacing;
+      var previousTaskbarAnchorX = state.taskbarAnchorX;
+      var previousTaskbarReferenceWidth = state.taskbarReferenceWidth;
+      var previousTaskbarViewportWidth = state.taskbarViewportWidth;
       state = Object.assign({}, state, next);
       state.taskbarMode = state.taskbarMode === true;
+      state.taskbarSize = state.taskbarSize == null || state.taskbarSize === '' ? 1 : clamp(state.taskbarSize, .60, 1.60, 1);
+      state.taskbarSkylineSpacing = state.taskbarSkylineSpacing == null || state.taskbarSkylineSpacing === '' ? .5 : clamp(state.taskbarSkylineSpacing, 0, 1, .5);
+      var taskbarGeometryChanged = state.taskbarMode && (previousTaskbarSize !== state.taskbarSize || previousTaskbarSkylineSpacing !== state.taskbarSkylineSpacing
+        || previousTaskbarAnchorX !== state.taskbarAnchorX || previousTaskbarReferenceWidth !== state.taskbarReferenceWidth || previousTaskbarViewportWidth !== state.taskbarViewportWidth);
       var previousTaskbarHotLayoutId = taskbarHotLayoutId;
       if (state.taskbarMode && Object.prototype.hasOwnProperty.call(next, 'taskbarLayoutId')) {
         updateTaskbarHotLayoutId(next.taskbarLayoutId);
@@ -943,7 +970,8 @@
       if (motion.beatPulse != null) state.beatPulse = motion.beatPulse;
       if (motion.bass != null) state.bass = motion.bass;
       var text = String(state.text || 'Mineradio').replace(/\s+/g, ' ').trim() || 'Mineradio';
-      baseFontSize = Math.max(12, 58 * clamp(state.size, .20, 1.55, 1));
+      var taskbarNormalSize = state.taskbarSize <= 1 ? state.taskbarSize : 1 + (state.taskbarSize - 1) * .65;
+      baseFontSize = Math.max(12, 58 * (state.taskbarMode ? taskbarNormalSize : clamp(state.size, .20, 1.55, 1)));
       state.progress = clamp(state.progress, 0, 1, 0);
       state.progressSpan = clamp(state.progressSpan, .75, 18, 4.8);
       state.progressReceivedAt = performance.now();
@@ -1012,7 +1040,8 @@
         taskbarTranslation.classList.add('in');
       }
       fitLyricText(false);
-      if (taskbarDisplayChanged || taskbarHotLayoutChanged) refreshTaskbarHotBounds(true);
+      if (taskbarGeometryChanged) taskbarHotBoundsKey = '';
+      if (taskbarDisplayChanged || taskbarHotLayoutChanged || taskbarGeometryChanged) refreshTaskbarHotBounds(true);
     }
     function currentDisplayProgress() {
       var target = clamp(state.progress, 0, 1, 0);
@@ -1095,6 +1124,12 @@
       var rotX = Math.sin(now * .86 + .2) * 3.25 - motionBeat * .92;
       var rotY = Math.sin(now * .74 + 1.3) * -2.75 + motionBeat * .34;
       var scale = 1 + motionBeat * .115 + motionSolar * .034 + motionBass * .026;
+      if (state.taskbarMode && state.taskbarSize > 1) {
+        var motionFit = Math.max(.3, 1 - (state.taskbarSize - 1) * 1.1);
+        bobY *= motionFit;
+        rotX *= motionFit;
+        scale = 1 + (scale - 1) * motionFit;
+      }
       live.scale += (scale - live.scale) * (scale > live.scale ? .46 : .16);
       stage.style.transform = 'translate3d(' + bobX.toFixed(2) + 'px,' + bobY.toFixed(2) + 'px,0) rotateX(' + rotX.toFixed(3) + 'deg) rotateY(' + rotY.toFixed(3) + 'deg) scale(' + live.scale.toFixed(4) + ')';
       stage.style.filter = 'brightness(' + (1.04 + motionBeat * .12 + motionSolar * .05).toFixed(3) + ') saturate(' + (1.08 + motionBeat * .10).toFixed(3) + ')';

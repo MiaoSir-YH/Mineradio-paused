@@ -181,7 +181,7 @@ function mainLoopDeepBackgroundSleeping() {
 }
 function mainLoopBackgroundDelayMs() {
   if (!mainLoopDeepBackgroundSleeping()) return 0;
-  if (fx && (fx.desktopLyrics || fx.wallpaperMode)) return 250;
+  if (fx && (desktopLyricsAnyEnabled() || fx.wallpaperMode)) return 250;
   if (typeof isBackgroundReleaseMode === 'function' && isBackgroundReleaseMode()) return 1500;
   return 1000;
 }
@@ -211,7 +211,7 @@ function wakeMainLoopFromBackground() {
 }
 function tickDeepBackgroundFrame(now, dt) {
   sampleRenderPerf(now, dt);
-  if (fx && (fx.desktopLyrics || fx.wallpaperMode) && typeof syncDesktopOverlayState === 'function') {
+  if (fx && (desktopLyricsAnyEnabled() || fx.wallpaperMode) && typeof syncDesktopOverlayState === 'function') {
     syncDesktopOverlayState();
   }
 }
@@ -287,7 +287,7 @@ function targetMainHomeAudioFps(now) {
 }
 function targetMainDesktopOverlayFps(now) {
   if (isDeepBackgroundMode()) return 1;
-  if (fx && (fx.desktopLyrics || fx.wallpaperMode)) {
+  if (fx && (desktopLyricsAnyEnabled() || fx.wallpaperMode)) {
     if (fx.desktopLyricsFps === 0 || mainLoopInteractionActive(now)) return 0;
     return Math.max(24, Math.min(120, Number(fx.desktopLyricsFps) || 60));
   }

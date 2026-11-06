@@ -796,9 +796,9 @@
             <div class="fx-toggle" id="t-edge" onclick="toggleFx('edge')"><span>轮廓高亮</span><span class="dot"></span>
             </div>
             <div class="fx-toggle" id="t-desktopLyrics" onclick="toggleFx('desktopLyrics')" title="全屏幕置顶歌词">
-              <span>歌词总开关</span><span class="dot"></span></div>
+              <span>桌面歌词</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-desktopLyricsTaskbar" onclick="toggleFx('desktopLyricsTaskbar')"
-              title="开启后将歌词显示在 Windows 任务栏区域；关闭后恢复桌面歌词"><span>任务栏歌词</span><span class="dot"></span></div>
+              title="独立显示在所选 Windows 任务栏，不影响桌面歌词"><span>任务栏歌词</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-desktopLyricsClickThrough" onclick="toggleFx('desktopLyricsClickThrough')"
               title="锁定后防误触；鼠标移到桌面歌词上按中键可锁定/解锁"><span>桌面歌词锁定</span><span class="dot"></span></div>
             <div class="fx-toggle" id="t-desktopLyricsCinema" onclick="toggleFx('desktopLyricsCinema')"
@@ -816,7 +816,22 @@
               max="1" step="0.01"><output></output></div>
           <div class="fx-slider"><label>桌面歌词高度</label><input id="fx-desktoplyricsy" type="range" min="0.08" max="0.92"
               step="0.01"><output></output></div>
-          <div class="fx-slider" id="desktop-lyrics-display-control"><label for="desktop-lyrics-display">任务栏屏幕</label><select id="desktop-lyrics-display" aria-label="任务栏歌词显示屏"><option value="">主显示屏（自动）</option></select></div>
+          <div id="desktop-lyrics-display-list">
+            <div class="fx-section-label">任务栏显示屏（可多选）</div>
+            <div id="desktop-lyrics-display-options" class="desktop-lyrics-display-list" role="group" aria-label="选择任务栏歌词显示屏"></div>
+          </div>
+          <div class="fx-slider" id="desktop-lyrics-display-control"><label for="desktop-lyrics-display">配置屏幕</label><select id="desktop-lyrics-display" aria-label="选择要配置的任务栏屏幕"><option value="">主显示屏（自动）</option></select></div>
+          <div class="fx-slider"><label for="fx-taskbarlyricssize">任务栏歌词大小</label><input id="fx-taskbarlyricssize" type="range" min="0.60" max="1.60" step="0.05"><output></output></div>
+          <div class="fx-slider" title="仅影响任务栏天际屏词云与中央歌词的水平间距"><label for="fx-taskbarskylinespacing">词云与歌词间距</label><input id="fx-taskbarskylinespacing" type="range" min="0" max="1" step="0.05"><output></output></div>
+          <div class="fx-slider"><label for="fx-taskbarlyricsopacity">任务栏歌词透明度</label><input id="fx-taskbarlyricsopacity" type="range" min="0.28" max="1" step="0.01"><output></output></div>
+          <div id="taskbar-lyrics-style-control">
+            <div class="fx-section-label">当前屏幕歌词样式</div>
+            <div class="fx-seg" id="taskbar-lyrics-style-seg" role="group" aria-label="当前屏幕歌词样式">
+              <button type="button" data-taskbar-lyrics-style="follow">跟随</button>
+              <button type="button" data-taskbar-lyrics-style="normal">普通</button>
+              <button type="button" data-taskbar-lyrics-style="skyline">天际屏</button>
+            </div>
+          </div>
           <div class="fx-section-label">桌面帧数</div>
           <div class="fx-seg" id="desktop-lyrics-fps-seg">
             <button data-desktop-lyrics-fps="24">24</button>

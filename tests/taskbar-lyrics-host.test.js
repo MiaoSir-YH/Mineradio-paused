@@ -90,6 +90,22 @@ test('validates frame dimensions, bounds, opacity, input types and reports drag 
   bridge.stop();child.emit('close',0,null);
 });
 
+test('forwards only valid native lyric click actions with their layout generation',()=>{
+  const {bridge,child}=fixture();
+  const actions=[];bridge.on('click-action',event=>actions.push(event));
+  assert.equal(bridge.start({handle:'184467',pid:37}),true);
+  assert.equal(bridge.setLayout(layout(7)),true);
+  for(const message of [
+    {kind:'click-action',action:'next',generation:7},
+    {kind:'click-action',action:'previous',generation:7},
+    {kind:'click-action',action:'play',generation:7},
+    {kind:'click-action',action:'next',generation:'invalid'},
+    {kind:'click-action',action:'previous'},
+  ]) child.stdout.write(JSON.stringify(message)+'\n');
+  assert.deepEqual(actions,[{action:'next',generation:7},{action:'previous',generation:7}]);
+  bridge.stop();child.emit('close',0,null);
+});
+
 test('stop closes input, preserves closed event and marks the eventual exit intentional',()=>{
   const {bridge,child}=fixture();let result;
   bridge.on('exit',value=>{result=value;});

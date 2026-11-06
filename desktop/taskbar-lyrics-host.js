@@ -292,6 +292,9 @@ class TaskbarLyricsHost extends EventEmitter {
       } else if (event.kind === 'drag-end' && isInt32(event.x)
           && isInt32(event.generation) && event.generation > 0) {
         this.emit('drag-end', { x: event.x, generation: event.generation });
+      } else if (event.kind === 'click-action' && (event.action === 'next' || event.action === 'previous')
+          && isInt32(event.generation) && event.generation > 0) {
+        this.emit('click-action', { action: event.action, generation: event.generation });
       } else if (event.kind === 'error') {
         this.emit('host-error', { error: String(event.error || 'HOST_ERROR'), code: event.code });
       } else if (event.kind === 'closed') {

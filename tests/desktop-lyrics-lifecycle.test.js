@@ -11,7 +11,7 @@ function harness() {
   const ctx = vm.createContext({
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     desktopLyricsRequestedEnabled: false, desktopLyricsState: {}, desktopLyricsWindow: null,
-    taskbarLyricsRuntime: null, taskbarLyricsRecreateAfterClose: false,
+    taskbarLyricsRuntime: null, taskbarLyricsRecreateAfterClose: false, taskbarLyricsMultiProtocol:false,
     closeTaskbarLyricsRuntime() {},
     desktopLyricsLastTaskbarLayout: null,
     appQuitting: false, isTrustedMainWindowIpc: e => e === 'main',

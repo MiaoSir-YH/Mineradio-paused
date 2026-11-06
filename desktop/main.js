@@ -42,6 +42,14 @@ let taskbarLyricsRuntime = null;
 let taskbarLyricsRendererSession = null;
 let taskbarLyricsRuntimeClosing = null;
 let taskbarLyricsRecreateAfterClose = false;
+let taskbarLyricsMultiProtocol = false;
+let taskbarLyricsMultiEnabled = false;
+let taskbarLyricsMultiSuspended = false;
+let taskbarLyricsTargets = [];
+const taskbarLyricsRuntimes = new Map();
+const taskbarLyricsMultiClosings = new Map();
+const taskbarLyricsMultiSessions = new Map();
+const desktopLyricsPendingTaskbarPositions = new Map();
 let desktopLyricsState = {};
 let desktopLyricsRequestedEnabled = false;
 let desktopLyricsUserBounds = null;
@@ -3652,11 +3660,17 @@ function broadcastDesktopLyricsDisplays() {
   mainWindow.webContents.send('mineradio-desktop-lyrics-displays-changed', desktopLyricsDisplaysSnapshot());
 }
 
+function taskbarLyricsWatcherNeeded() {
+  if (taskbarLyricsMultiProtocol) return taskbarLyricsMultiEnabled && !taskbarLyricsMultiSuspended && taskbarLyricsTargets.length > 0;
+  return desktopLyricsRequestedEnabled && desktopLyricsTaskbarMode() && !!taskbarLyricsRuntime;
+}
+
 function applyTaskbarLyricsSnapshot(rects) {
   taskbarLyricsPhysicalRects = Array.isArray(rects) ? rects : [];
   taskbarLyricsSnapshotReady = true;
   taskbarLyricsSnapshotVersion += 1;
-  if (desktopLyricsRequestedEnabled && desktopLyricsTaskbarMode()) positionDesktopLyricsWindow();
+  if (taskbarLyricsMultiProtocol) reconcileTaskbarLyricsRuntimes();
+  else if (desktopLyricsRequestedEnabled && desktopLyricsTaskbarMode()) positionDesktopLyricsWindow();
   broadcastDesktopLyricsDisplays();
 }
 
@@ -3682,10 +3696,10 @@ function stopTaskbarLyricsWatcher() {
 
 function startTaskbarLyricsWatcher() {
   if (process.platform !== 'win32' || taskbarLyricsWatcher || taskbarLyricsWatcherClosing || taskbarLyricsRetryTimer || appQuitting) return;
-  if (!taskbarLyricsRuntime) return;
+  if (!taskbarLyricsWatcherNeeded()) return;
   taskbarLyricsSnapshotReady = false;
   const watcher = watchWindowsTaskbars((rects) => {
-    if (taskbarLyricsWatcher !== watcher || !desktopLyricsRequestedEnabled || !desktopLyricsTaskbarMode()) return;
+    if (taskbarLyricsWatcher !== watcher || !taskbarLyricsWatcherNeeded()) return;
     applyTaskbarLyricsSnapshot(rects);
   });
   taskbarLyricsWatcher = watcher;
@@ -3696,12 +3710,11 @@ function startTaskbarLyricsWatcher() {
     taskbarLyricsWatcher = null;
     taskbarLyricsSnapshotReady = false;
     taskbarLyricsWatcherClosing = null;
-    if (!appQuitting && desktopLyricsRequestedEnabled && desktopLyricsTaskbarMode()
-        && taskbarLyricsRuntime) {
+    if (!appQuitting && taskbarLyricsWatcherNeeded()) {
       if (wasClosing) { startTaskbarLyricsWatcher(); return; }
       taskbarLyricsRetryTimer = setTimeout(() => {
         taskbarLyricsRetryTimer = null;
-        if (desktopLyricsRequestedEnabled && desktopLyricsTaskbarMode()) startTaskbarLyricsWatcher();
+        if (taskbarLyricsWatcherNeeded()) startTaskbarLyricsWatcher();
       }, 3000);
     }
   });
@@ -3935,10 +3948,17 @@ function broadcastDesktopLyricsEnabledState(enabled) {
   }
 }
 
+function taskbarLyricsMultiEntryForEvent(event) {
+  if (!taskbarLyricsMultiProtocol || !event) return null;
+  return [...taskbarLyricsRuntimes.values()].find(entry => entry.runtime.window
+    && !entry.runtime.window.isDestroyed() && event.sender === entry.runtime.window.webContents) || null;
+}
+
 function isTrustedDesktopLyricsIpc(event) {
   if (isTrustedMainWindowIpc(event)) return true;
   try {
-    const win = desktopLyricsTaskbarMode() && taskbarLyricsRuntime ? taskbarLyricsRuntime.window : desktopLyricsWindow;
+    const multiEntry = taskbarLyricsMultiEntryForEvent(event);
+    const win = multiEntry ? multiEntry.runtime.window : desktopLyricsTaskbarMode() && taskbarLyricsRuntime ? taskbarLyricsRuntime.window : desktopLyricsWindow;
     if (!win || win.isDestroyed() || !event || event.sender !== win.webContents) return false;
     if (event.senderFrame && event.senderFrame.parent) return false;
     const source = new URL(event.senderFrame && event.senderFrame.url || event.sender.getURL());
@@ -3966,6 +3986,224 @@ function taskbarLyricsStateWithProtectedPosition(payload) {
   return next;
 }
 
+function taskbarLyricsTargetNumber(value, min, max, fallback) {
+  if (value == null || (typeof value === 'string' && !value.trim())) return fallback;
+  return clampNumber(value, min, max, fallback);
+}
+
+function normalizeTaskbarLyricsTargets(targets) {
+  const seen = new Set();
+  const result = [];
+  for (const value of Array.isArray(targets) ? targets : []) {
+    if (!value || typeof value !== 'object' || result.length >= 32) continue;
+    const displayId = value.displayId == null ? '' : String(value.displayId).slice(0, 128);
+    if (seen.has(displayId)) continue;
+    seen.add(displayId);
+    result.push({
+      displayId,
+      position: taskbarLyricsTargetNumber(value.position, 0, 1, 0.15),
+      size: taskbarLyricsTargetNumber(value.size, 0.6, 1.6, 1),
+      skylineSpacing: taskbarLyricsTargetNumber(value.skylineSpacing, 0, 1, 0.5),
+      opacity: taskbarLyricsTargetNumber(value.opacity, 0.28, 1, clampNumber(desktopLyricsState.opacity, 0.28, 1, 0.92)),
+      style: value.style === 'normal' || value.style === 'skyline' ? value.style : 'follow',
+    });
+  }
+  return result;
+}
+
+function taskbarLyricsTargetsLayoutKey() {
+  return JSON.stringify([taskbarLyricsMultiEnabled, taskbarLyricsTargets.map(target => {
+    const skyline = taskbarLyricsTargetUsesSkyline(target);
+    return [target.displayId, target.position, skyline, skyline ? target.skylineSpacing : null];
+  })]);
+}
+
+function taskbarLyricsTargetUsesSkyline(target) {
+  return target.style === 'skyline' || (target.style === 'follow' && desktopLyricsState.skyline === true);
+}
+
+function refreshTaskbarLyricsEntryTargets() {
+  const byId = new Map(taskbarLyricsTargets.map(target => [target.displayId, target]));
+  for (const entry of taskbarLyricsRuntimes.values()) {
+    const target = byId.get(entry.displayId);
+    if (target) entry.target = target;
+  }
+}
+
+function resolvedTaskbarLyricsTargets() {
+  const displays = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  const byPhysical = new Map();
+  // Explicit selections win when a legacy automatic selection resolves to the same monitor.
+  const targets = [...taskbarLyricsTargets.filter(target => target.displayId), ...taskbarLyricsTargets.filter(target => !target.displayId)];
+  for (const target of targets) {
+    const display = target.displayId
+      ? displays.find(item => String(item.id) === target.displayId)
+      : displays.find(item => primary && String(item.id) === String(primary.id));
+    if (!display) continue;
+    const physicalDisplayId = String(display.id);
+    if (!byPhysical.has(physicalDisplayId)) byPhysical.set(physicalDisplayId, { target, display, physicalDisplayId });
+  }
+  return byPhysical;
+}
+
+function getTaskbarLyricsSessionForDisplay(displayId) {
+  const key = String(displayId);
+  if (taskbarLyricsMultiSessions.has(key)) return taskbarLyricsMultiSessions.get(key);
+  const suffix = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
+  const isolated = createTaskbarLyricsRendererSession(`mineradio-taskbar-lyrics-${process.pid}-${suffix}`);
+  taskbarLyricsMultiSessions.set(key, isolated);
+  return isolated;
+}
+
+function taskbarLyricsExecutable() {
+  const unpacked = process.resourcesPath && path.join(process.resourcesPath, 'app.asar.unpacked', 'build', 'taskbar-lyrics-host.exe');
+  return app.isPackaged
+    ? (unpacked && fs.existsSync(unpacked) ? unpacked : path.join(__dirname, '..', 'build', 'taskbar-lyrics-host.exe'))
+    : require('../scripts/build-taskbar-lyrics-host').ensureDevelopmentHost();
+}
+
+function taskbarLyricsPhysicalLayout(display, taskbar, layout, targetId) {
+  const scaleFactor = Number(display.scaleFactor) || 1;
+  const bar = taskbar.physicalBounds, monitor = taskbar.monitorBounds;
+  const physical = {
+    x: Math.round(bar.x + (layout.bounds.x - taskbar.bounds.x) * scaleFactor),
+    y: Math.round(bar.y + (layout.bounds.y - taskbar.bounds.y) * scaleFactor),
+    width: Math.max(1, Math.round(layout.bounds.width * scaleFactor)),
+    height: Math.max(1, Math.round(layout.bounds.height * scaleFactor)),
+  };
+  const minX = Math.max(bar.x, monitor.x);
+  const maxX = Math.max(minX, Math.min(bar.x + bar.width, monitor.x + monitor.width) - physical.width);
+  physical.x = Math.max(minX, Math.min(maxX, physical.x));
+  const availableWidth = Math.max(0, Math.min(bar.x + bar.width, monitor.x + monitor.width) - minX);
+  const referenceWidth = Number.isFinite(layout.referenceWidth) ? layout.referenceWidth : layout.bounds.width;
+  const physicalReferenceWidth = Math.min(availableWidth, Math.round(referenceWidth * scaleFactor));
+  const referenceTravel = Math.max(0, availableWidth - physicalReferenceWidth);
+  const referenceCenterMin = minX + physicalReferenceWidth / 2;
+  const ratio = taskbarLyricsTargetNumber(layout.position, 0, 1, 0.15);
+  const anchorOffset = referenceCenterMin + referenceTravel * ratio - physical.x;
+  return { handle: taskbar.windowHandle, pid: taskbar.pid, displayId: layout.displayId, targetId,
+    physical, logical: layout.bounds, minX, maxX, scaleFactor, referenceWidth, anchorX: anchorOffset / scaleFactor,
+    referenceTravel, referenceCenterMin, anchorOffset };
+}
+
+function taskbarLyricsPositionFromPhysicalX(layout, x) {
+  if (Number.isFinite(layout.referenceTravel) && Number.isFinite(layout.referenceCenterMin) && Number.isFinite(layout.anchorOffset)) {
+    return layout.referenceTravel > 0 ? clampNumber((x + layout.anchorOffset - layout.referenceCenterMin) / layout.referenceTravel, 0, 1, 0) : 0;
+  }
+  return layout.maxX > layout.minX ? clampNumber((x - layout.minX) / (layout.maxX - layout.minX), 0, 1, 0) : 0;
+}
+
+function taskbarLyricsMultiPayload(entry, includeAssets = false) {
+  const target = entry.target;
+  const pending = desktopLyricsPendingTaskbarPositions.get(entry.displayId);
+  const position = pending && pending.physicalDisplayId === entry.physicalDisplayId ? pending.position : target.position;
+  const skyline = taskbarLyricsTargetUsesSkyline(target);
+  let payload = { ...desktopLyricsState, enabled: true, taskbarMode: true,
+    taskbarDisplayId: entry.physicalDisplayId, taskbarPosition: position,
+    taskbarSize: target.size, taskbarSkylineSpacing: target.skylineSpacing, opacity: target.opacity, skyline };
+  if (entry.runtime.layout && Number.isFinite(entry.runtime.layout.referenceWidth) && Number.isFinite(entry.runtime.layout.anchorX)) {
+    payload.taskbarReferenceWidth = entry.runtime.layout.referenceWidth;
+    payload.taskbarAnchorX = entry.runtime.layout.anchorX;
+    payload.taskbarViewportWidth = entry.runtime.layout.logical.width;
+  }
+  if (includeAssets && skyline && desktopLyricsSkylineCache && desktopLyricsSkylineCache.key === payload.skylineKey) {
+    payload = { ...payload, skylineLines: desktopLyricsSkylineCache.lines };
+  }
+  if (includeAssets && payload.customFont && desktopLyricsCustomFontCache && desktopLyricsCustomFontCache.id === payload.customFont.id) {
+    payload = { ...payload, customFont: { ...payload.customFont, dataUrl: desktopLyricsCustomFontCache.dataUrl } };
+  }
+  return payload;
+}
+
+function sendTaskbarLyricsMultiState(entry, includeAssets = false) {
+  if (!entry || taskbarLyricsRuntimes.get(entry.physicalDisplayId) !== entry) return;
+  entry.runtime.setState(taskbarLyricsMultiPayload(entry, includeAssets));
+}
+
+function closeTaskbarLyricsMultiEntry(entry) {
+  if (!entry || taskbarLyricsRuntimes.get(entry.physicalDisplayId) !== entry) return;
+  taskbarLyricsRuntimes.delete(entry.physicalDisplayId);
+  const closing = Promise.resolve(entry.runtime.close()).catch(error => console.warn('Taskbar lyrics close:', error && error.message || error));
+  taskbarLyricsMultiClosings.set(entry.physicalDisplayId, closing);
+  closing.finally(() => {
+    if (taskbarLyricsMultiClosings.get(entry.physicalDisplayId) !== closing) return;
+    taskbarLyricsMultiClosings.delete(entry.physicalDisplayId);
+    if (!appQuitting && taskbarLyricsWatcherNeeded()) reconcileTaskbarLyricsRuntimes();
+  });
+}
+
+function closeAllTaskbarLyricsMulti() {
+  for (const entry of [...taskbarLyricsRuntimes.values()]) closeTaskbarLyricsMultiEntry(entry);
+}
+
+function createTaskbarLyricsMultiEntry(target, physicalDisplayId) {
+  if (taskbarLyricsMultiClosings.has(physicalDisplayId)) return null;
+  const runtime = new TaskbarLyricsRuntime({
+    BrowserWindow, preload: path.join(__dirname, 'overlay-preload.js'), url: overlayUrl('desktop-lyrics.html'),
+    executable: taskbarLyricsExecutable(), session: getTaskbarLyricsSessionForDisplay(physicalDisplayId),
+  });
+  const entry = { displayId: target.displayId, physicalDisplayId, target, runtime };
+  taskbarLyricsRuntimes.set(physicalDisplayId, entry);
+  const current = () => taskbarLyricsRuntimes.get(physicalDisplayId) === entry && taskbarLyricsWatcherNeeded();
+  runtime.on('renderer-ready', () => { if (current()) sendTaskbarLyricsMultiState(entry, true); });
+  runtime.on('renderer-gone', () => { if (current()) closeTaskbarLyricsMultiEntry(entry); });
+  runtime.on('runtime-error', error => console.warn('Taskbar lyrics host:', error && error.message || error));
+  runtime.on('click-action', event => {
+    if (!current() || !runtime.layout || !event || event.generation !== runtime.generation) return;
+    if (event.action === 'next') sendGlobalHotkeyAction('nextTrack');
+    else if (event.action === 'previous') sendGlobalHotkeyAction('prevTrack');
+  });
+  runtime.on('drag-end', event => {
+    if (!current() || !runtime.layout || !event || event.generation !== runtime.generation || !Number.isFinite(Number(event.x))) return;
+    const layout = runtime.layout;
+    const x = Math.max(layout.minX, Math.min(layout.maxX, Number(event.x)));
+    if (x === layout.physical.x) return;
+    const position = taskbarLyricsPositionFromPhysicalX(layout, x);
+    const pending = { displayId: entry.displayId, physicalDisplayId, position, revision: ++desktopLyricsTaskbarPositionRevision };
+    desktopLyricsPendingTaskbarPositions.set(entry.displayId, pending);
+    reconcileTaskbarLyricsRuntimes();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('mineradio-desktop-lyrics-taskbar-position-changed', pending);
+  });
+  runtime.start();
+  sendTaskbarLyricsMultiState(entry, true);
+  return entry;
+}
+
+function reconcileTaskbarLyricsRuntimes() {
+  if (!taskbarLyricsMultiProtocol || !taskbarLyricsMultiEnabled || taskbarLyricsMultiSuspended || appQuitting) {
+    closeAllTaskbarLyricsMulti();
+    return;
+  }
+  if (taskbarLyricsRuntime || taskbarLyricsRuntimeClosing) return;
+  const desired = resolvedTaskbarLyricsTargets();
+  for (const entry of [...taskbarLyricsRuntimes.values()]) {
+    if (!desired.has(entry.physicalDisplayId)) closeTaskbarLyricsMultiEntry(entry);
+  }
+  const displays = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  const taskbars = taskbarLyricsDipRects();
+  for (const [physicalDisplayId, selected] of desired) {
+    let entry = taskbarLyricsRuntimes.get(physicalDisplayId);
+    if (!entry) entry = createTaskbarLyricsMultiEntry(selected.target, physicalDisplayId);
+    if (!entry) continue;
+    if (entry.displayId !== selected.target.displayId && entry.runtime.layout) {
+      entry.runtime.setLayout({ ...entry.runtime.layout, targetId: selected.target.displayId });
+    }
+    entry.displayId = selected.target.displayId;
+    entry.target = selected.target;
+    const pending = desktopLyricsPendingTaskbarPositions.get(entry.displayId);
+    const position = pending && pending.physicalDisplayId === physicalDisplayId ? pending.position : entry.target.position;
+    const layout = taskbarLyricsSnapshotReady && resolveTaskbarLyricsLayout(displays, taskbars, {
+      displayId: physicalDisplayId, primaryDisplayId: primary.id, position,
+      skyline: taskbarLyricsTargetUsesSkyline(entry.target), skylineSpacing: entry.target.skylineSpacing,
+    });
+    const taskbar = taskbars.find(item => item.displayId === physicalDisplayId);
+    if (!layout || !taskbar || !taskbar.windowHandle || !taskbar.pid) continue;
+    entry.runtime.setLayout(taskbarLyricsPhysicalLayout(selected.display, taskbar, layout, entry.displayId), taskbarLyricsMultiPayload(entry));
+  }
+}
+
 function positionDesktopLyricsWindow(payload = desktopLyricsState, options = {}) {
   if (desktopLyricsTaskbarMode(payload)) {
     const runtime = taskbarLyricsRuntime;
@@ -3979,6 +4217,8 @@ function positionDesktopLyricsWindow(payload = desktopLyricsState, options = {})
       displayId: payload.taskbarDisplayId,
       primaryDisplayId: primary.id,
       position: payload.taskbarPosition,
+      skyline: payload.skyline === true,
+      skylineSpacing: payload.taskbarSkylineSpacing,
     });
     // Keep the existing child attached through transient Explorer snapshots.
     // Its parent controls visibility during taskbar auto-hide.
@@ -3989,20 +4229,7 @@ function positionDesktopLyricsWindow(payload = desktopLyricsState, options = {})
     const taskbar = taskbars.find(entry => entry.displayId === layout.displayId);
     const display = displays.find(item => String(item.id) === String(layout.displayId));
     if (!taskbar || !taskbar.windowHandle || !taskbar.pid || !display) return;
-    const scaleFactor = Number(display.scaleFactor) || 1;
-    const bar = taskbar.physicalBounds;
-    const monitor = taskbar.monitorBounds;
-    const physical = {
-      x: Math.round(bar.x + (layout.bounds.x - taskbar.bounds.x) * scaleFactor),
-      y: Math.round(bar.y + (layout.bounds.y - taskbar.bounds.y) * scaleFactor),
-      width: Math.max(1, Math.round(layout.bounds.width * scaleFactor)),
-      height: Math.max(1, Math.round(layout.bounds.height * scaleFactor)),
-    };
-    const minX = Math.max(bar.x, monitor.x);
-    const maxX = Math.max(minX, Math.min(bar.x + bar.width, monitor.x + monitor.width) - physical.width);
-    physical.x = Math.max(minX, Math.min(maxX, physical.x));
-    runtime.setLayout({ handle: taskbar.windowHandle, pid: taskbar.pid, displayId: layout.displayId,
-      physical, logical: layout.bounds, minX, maxX, scaleFactor });
+    runtime.setLayout(taskbarLyricsPhysicalLayout(display, taskbar, layout), payload);
     return;
   }
   if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) return;
@@ -4016,7 +4243,7 @@ function positionDesktopLyricsWindow(payload = desktopLyricsState, options = {})
 
 function rememberDesktopLyricsAssets(payload) {
   if (!payload || typeof payload !== 'object') return;
-  if (payload.skyline === true && Array.isArray(payload.skylineLines)) {
+  if (payload.skylineKey != null && Array.isArray(payload.skylineLines)) {
     desktopLyricsSkylineCache = { key: payload.skylineKey, lines: payload.skylineLines };
   }
   if (Object.prototype.hasOwnProperty.call(payload, 'customFont')) {
@@ -4040,7 +4267,17 @@ function sendDesktopLyricsState(includeAssets = false) {
       && desktopLyricsCustomFontCache.id === payload.customFont.id) {
     payload = { ...payload, customFont: { ...payload.customFont, dataUrl: desktopLyricsCustomFontCache.dataUrl } };
   }
-  if (desktopLyricsTaskbarMode() && taskbarLyricsRuntime) taskbarLyricsRuntime.setState(payload);
+  if (taskbarLyricsMultiProtocol) {
+    if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
+      desktopLyricsWindow.webContents.send('mineradio-desktop-lyrics-state', { ...payload, enabled: desktopLyricsRequestedEnabled, taskbarMode: false });
+    }
+    for (const entry of taskbarLyricsRuntimes.values()) sendTaskbarLyricsMultiState(entry, includeAssets);
+  } else if (desktopLyricsTaskbarMode() && taskbarLyricsRuntime) {
+    const layout = taskbarLyricsRuntime.layout;
+    taskbarLyricsRuntime.setState(layout && Number.isFinite(layout.referenceWidth) && Number.isFinite(layout.anchorX)
+      ? { ...payload, taskbarReferenceWidth: layout.referenceWidth, taskbarAnchorX: layout.anchorX,
+        taskbarViewportWidth: layout.logical.width } : payload);
+  }
   else if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) desktopLyricsWindow.webContents.send('mineradio-desktop-lyrics-state', payload);
 }
 
@@ -4048,17 +4285,20 @@ function requestTaskbarLyricsHotBounds() {
   if (desktopLyricsTaskbarMode() && taskbarLyricsRuntime) taskbarLyricsRuntime.requestHotBounds();
 }
 
-function getTaskbarLyricsRendererSession() {
-  if (taskbarLyricsRendererSession) return taskbarLyricsRendererSession;
-  const isolated = session.fromPartition(`mineradio-taskbar-lyrics-${process.pid}`, { cache: false });
+function createTaskbarLyricsRendererSession(partition) {
+  const isolated = session.fromPartition(partition, { cache: false });
   isolated.protocol.handle('http', createLocalProtocolHandler({
     origin: mainRendererOrigin,
     backendOrigin: () => mainServerPort ? `http://127.0.0.1:${mainServerPort}` : '',
     tokenHeaders: () => localServer && typeof localServer.getLocalRequestHeaders === 'function' ? localServer.getLocalRequestHeaders() : {},
     remoteFetch: request => isolated.fetch(request, { bypassCustomProtocolHandlers: true }),
   }));
-  taskbarLyricsRendererSession = isolated;
   return isolated;
+}
+
+function getTaskbarLyricsRendererSession() {
+  if (!taskbarLyricsRendererSession) taskbarLyricsRendererSession = createTaskbarLyricsRendererSession(`mineradio-taskbar-lyrics-${process.pid}`);
+  return taskbarLyricsRendererSession;
 }
 
 function closeTaskbarLyricsRuntime({ recreate = true } = {}) {
@@ -4074,6 +4314,7 @@ function closeTaskbarLyricsRuntime({ recreate = true } = {}) {
     taskbarLyricsRuntimeClosing = null;
     const shouldRecreate = taskbarLyricsRecreateAfterClose;
     taskbarLyricsRecreateAfterClose = false;
+    if (taskbarLyricsMultiProtocol && taskbarLyricsWatcherNeeded()) reconcileTaskbarLyricsRuntimes();
     if (shouldRecreate && !appQuitting && desktopLyricsRequestedEnabled) createDesktopLyricsWindow(desktopLyricsState);
   });
   return closing;
@@ -4081,25 +4322,27 @@ function closeTaskbarLyricsRuntime({ recreate = true } = {}) {
 
 function createTaskbarLyricsRuntime() {
   if (taskbarLyricsRuntime || taskbarLyricsRuntimeClosing || appQuitting) return taskbarLyricsRuntime;
-  const unpackedExecutable = process.resourcesPath && path.join(process.resourcesPath, 'app.asar.unpacked', 'build', 'taskbar-lyrics-host.exe');
-  const executable = app.isPackaged
-    ? (unpackedExecutable && fs.existsSync(unpackedExecutable) ? unpackedExecutable : path.join(__dirname, '..', 'build', 'taskbar-lyrics-host.exe'))
-    : require('../scripts/build-taskbar-lyrics-host').ensureDevelopmentHost();
   const runtime = new TaskbarLyricsRuntime({
     BrowserWindow, preload: path.join(__dirname, 'overlay-preload.js'), url: overlayUrl('desktop-lyrics.html'),
-    executable, session: getTaskbarLyricsRendererSession(),
+    executable: taskbarLyricsExecutable(), session: getTaskbarLyricsRendererSession(),
   });
   taskbarLyricsRuntime = runtime;
   runtime.on('renderer-ready', () => { if (taskbarLyricsRuntime === runtime) sendDesktopLyricsState(true); });
   runtime.on('renderer-gone', () => { if (taskbarLyricsRuntime === runtime) closeTaskbarLyricsRuntime(); });
   runtime.on('runtime-error', error => console.warn('Taskbar lyrics host:', error && error.message || error));
+  runtime.on('click-action', event => {
+    if (taskbarLyricsRuntime !== runtime || !desktopLyricsRequestedEnabled || !desktopLyricsTaskbarMode()
+        || !runtime.layout || !event || event.generation !== runtime.generation) return;
+    if (event.action === 'next') sendGlobalHotkeyAction('nextTrack');
+    else if (event.action === 'previous') sendGlobalHotkeyAction('prevTrack');
+  });
   runtime.on('drag-end', event => {
     if (taskbarLyricsRuntime !== runtime || !runtime.layout || !desktopLyricsRequestedEnabled || !desktopLyricsTaskbarMode()) return;
     const layout = runtime.layout;
     if (Number(event.generation) !== runtime.generation || !Number.isFinite(Number(event.x))) return;
     const x = Math.max(layout.minX, Math.min(layout.maxX, Number(event.x)));
     if (x === layout.physical.x) return;
-    const position = layout.maxX > layout.minX ? (x - layout.minX) / (layout.maxX - layout.minX) : 0;
+    const position = taskbarLyricsPositionFromPhysicalX(layout, x);
     desktopLyricsState = { ...desktopLyricsState, taskbarPosition: position };
     desktopLyricsPendingTaskbarPosition = { position, revision: ++desktopLyricsTaskbarPositionRevision, displayId: layout.displayId };
     positionDesktopLyricsWindow();
@@ -4114,7 +4357,44 @@ function createTaskbarLyricsRuntime() {
   return runtime;
 }
 
-function createDesktopLyricsWindow(payload = {}) {
+function applyDesktopLyricsOutputs(payload = {}, options = {}) {
+  if (appQuitting) return null;
+  const firstMultiPayload = !taskbarLyricsMultiProtocol;
+  const wasSuspended = taskbarLyricsMultiSuspended;
+  const previousLayoutKey = taskbarLyricsTargetsLayoutKey();
+  taskbarLyricsMultiProtocol = true;
+  taskbarLyricsMultiSuspended = false;
+  const config = payload.taskbarLyrics && typeof payload.taskbarLyrics === 'object' ? payload.taskbarLyrics : null;
+  if (options.updateEnabled !== false && Object.prototype.hasOwnProperty.call(payload, 'enabled')) desktopLyricsRequestedEnabled = payload.enabled === true;
+  if (config) {
+    const incoming = normalizeTaskbarLyricsTargets(config.targets);
+    if (options.updateEnabled !== false) {
+      taskbarLyricsMultiEnabled = config.enabled === true;
+      taskbarLyricsTargets = incoming;
+    } else {
+      const updates = new Map(incoming.map(target => [target.displayId, target]));
+      taskbarLyricsTargets = taskbarLyricsTargets.map(target => updates.get(target.displayId) || target);
+    }
+  }
+  if (firstMultiPayload && taskbarLyricsRuntime) closeTaskbarLyricsRuntime({ recreate: false });
+  const next = { ...payload, taskbarMode: false, enabled: desktopLyricsRequestedEnabled,
+    taskbarLyrics: { enabled: taskbarLyricsMultiEnabled, targets: taskbarLyricsTargets } };
+  rememberDesktopLyricsAssets(next);
+  if (desktopLyricsRequestedEnabled) createDesktopLyricsWindow(next, true);
+  else {
+    desktopLyricsState = { ...taskbarLyricsStateWithProtectedPosition(next), enabled: false, taskbarMode: false };
+    if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) closeDesktopLyricsWindow({ suppressStateSend: true });
+  }
+  if (firstMultiPayload || wasSuspended || previousLayoutKey !== taskbarLyricsTargetsLayoutKey()) reconcileTaskbarLyricsRuntimes();
+  else refreshTaskbarLyricsEntryTargets();
+  if (taskbarLyricsWatcherNeeded()) startTaskbarLyricsWatcher();
+  else stopTaskbarLyricsWatcher();
+  sendDesktopLyricsState();
+  return desktopLyricsWindow;
+}
+
+function createDesktopLyricsWindow(payload = {}, internalMulti = false) {
+  if (!internalMulti && payload && payload.taskbarLyrics && typeof payload.taskbarLyrics === 'object') return applyDesktopLyricsOutputs(payload);
   if (appQuitting || !desktopLyricsRequestedEnabled) return null;
   if (desktopLyricsTaskbarDrag && (payload.taskbarMode === false
       || (Object.prototype.hasOwnProperty.call(payload, 'taskbarDisplayId')
@@ -4126,6 +4406,8 @@ function createDesktopLyricsWindow(payload = {}) {
   const previousTaskbarMode = desktopLyricsTaskbarMode();
   const previousTaskbarDisplayId = desktopLyricsState.taskbarDisplayId;
   const previousTaskbarPosition = desktopLyricsState.taskbarPosition;
+  const previousTaskbarSkyline = desktopLyricsState.skyline;
+  const previousTaskbarSpacing = desktopLyricsState.taskbarSkylineSpacing;
   rememberDesktopLyricsAssets(payload);
   desktopLyricsState = { ...taskbarLyricsStateWithProtectedPosition(payload), enabled: true };
   const taskbarMode = desktopLyricsTaskbarMode();
@@ -4137,7 +4419,9 @@ function createDesktopLyricsWindow(payload = {}) {
   }
   const taskbarChanged = previousTaskbarMode !== taskbarMode
     || String(previousTaskbarDisplayId || '') !== String(desktopLyricsState.taskbarDisplayId || '')
-    || previousTaskbarPosition !== desktopLyricsState.taskbarPosition;
+    || previousTaskbarPosition !== desktopLyricsState.taskbarPosition
+    || (taskbarMode && (previousTaskbarSkyline !== desktopLyricsState.skyline
+      || previousTaskbarSpacing !== desktopLyricsState.taskbarSkylineSpacing));
   const hasY = Object.prototype.hasOwnProperty.call(payload || {}, 'y');
   const nextY = clampNumber(desktopLyricsState.y, 0.08, 0.92, 0.76);
   const yChanged = hasY && Number.isFinite(Number(previousY)) && Math.abs(nextY - clampNumber(previousY, 0.08, 0.92, 0.76)) > 0.001;
@@ -4160,13 +4444,13 @@ function createDesktopLyricsWindow(payload = {}) {
     if (!runtime) return null;
     startTaskbarLyricsWatcher();
     if (taskbarChanged) positionDesktopLyricsWindow();
-    sendDesktopLyricsState();
+    if (!internalMulti) sendDesktopLyricsState();
     return runtime.window;
   }
   desktopLyricsPointerCapture = previousTaskbarMode ? false : desktopLyricsPointerCapture;
   if (taskbarLyricsRuntime) closeTaskbarLyricsRuntime();
   if (taskbarLyricsRuntimeClosing) { taskbarLyricsRecreateAfterClose = true; return null; }
-  stopTaskbarLyricsWatcher();
+  if (!taskbarLyricsMultiProtocol || !taskbarLyricsWatcherNeeded()) stopTaskbarLyricsWatcher();
   if (previousTaskbarMode || !desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) startDesktopLyricsMousePoller();
   if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
     if (taskbarChanged || (yChanged && !taskbarMode)) {
@@ -4175,7 +4459,7 @@ function createDesktopLyricsWindow(payload = {}) {
       desktopLyricsWindow.setOpacity(clampNumber(desktopLyricsState.opacity, 0.28, 1, 0.92));
     }
     applyDesktopLyricsMouseBehavior();
-    sendDesktopLyricsState();
+    if (!internalMulti) sendDesktopLyricsState();
     return desktopLyricsWindow;
   }
 
@@ -4253,7 +4537,7 @@ function createDesktopLyricsWindow(payload = {}) {
     desktopLyricsLastTaskbarLayout = null;
     desktopLyricsPointerCapture = false;
     desktopLyricsMouseIgnored = null;
-    stopTaskbarLyricsWatcher();
+    if (!taskbarLyricsMultiProtocol || !taskbarLyricsWatcherNeeded()) stopTaskbarLyricsWatcher();
     taskbarLyricsGuardState = null;
     taskbarLyricsGuardStatus = null;
     if (!lyricsWindow.__mineradioIntentionalClose && !appQuitting && desktopLyricsRequestedEnabled && desktopLyricsTaskbarMode()) {
@@ -4267,7 +4551,7 @@ function createDesktopLyricsWindow(payload = {}) {
   return desktopLyricsWindow;
 }
 
-function closeDesktopLyricsWindow({ preservePreference = false } = {}) {
+function closeDesktopLyricsWindow({ preservePreference = false, suppressStateSend = false } = {}) {
   cancelTaskbarLyricsDrag();
   stopTaskbarLyricsPointerPoller();
   desktopLyricsLastTaskbarLayout = null;
@@ -4279,12 +4563,12 @@ function closeDesktopLyricsWindow({ preservePreference = false } = {}) {
   desktopLyricsMouseIgnored = null;
   desktopLyricsHotBounds = null;
   stopDesktopLyricsMousePoller();
-  stopTaskbarLyricsWatcher();
+  if (!taskbarLyricsMultiProtocol || !taskbarLyricsWatcherNeeded()) stopTaskbarLyricsWatcher();
   taskbarLyricsRecreateAfterClose = false;
   if (taskbarLyricsRuntime) closeTaskbarLyricsRuntime({ recreate: false });
   if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
     desktopLyricsWindow.__mineradioIntentionalClose = true;
-    sendDesktopLyricsState();
+    if (!suppressStateSend) sendDesktopLyricsState();
     desktopLyricsWindow.close();
   }
   desktopLyricsWindow = null;
@@ -4409,6 +4693,8 @@ async function closeWallpaperWindow(reason = 'disabled') {
 }
 
 function closeOverlayWindows(reason = 'overlay-close') {
+  taskbarLyricsMultiSuspended = true;
+  closeAllTaskbarLyricsMulti();
   closeDesktopLyricsWindow({ preservePreference: true });
   return closeWallpaperWindow(reason).catch((error) => {
     console.warn('[FullDesktopMode] close failed:', error && error.message || error);
@@ -5382,6 +5668,14 @@ ipcMain.handle('mineradio-desktop-lyrics-set-enabled', async (event, enabled, pa
   try {
     if (!isTrustedDesktopLyricsIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
     if (appQuitting) return { ok: false, error: 'APP_QUITTING' };
+    if (taskbarLyricsMultiProtocol || (payload && payload.taskbarLyrics && typeof payload.taskbarLyrics === 'object')) {
+      if (taskbarLyricsMultiEntryForEvent(event)) return { ok: false, error: 'TASKBAR_LYRICS_NATIVE_CONTROL' };
+      const wasEnabled = desktopLyricsRequestedEnabled;
+      const hadWindow = !!(desktopLyricsWindow && !desktopLyricsWindow.isDestroyed());
+      applyDesktopLyricsOutputs({ ...(payload || {}), enabled: enabled === true });
+      if (wasEnabled !== desktopLyricsRequestedEnabled && (enabled || !hadWindow)) broadcastDesktopLyricsEnabledState(enabled);
+      return { ok: true };
+    }
     desktopLyricsRequestedEnabled = enabled === true;
     if (enabled) {
       createDesktopLyricsWindow(payload || {});
@@ -5399,6 +5693,10 @@ ipcMain.handle('mineradio-desktop-lyrics-update', async (event, payload) => {
   try {
     if (!isTrustedMainWindowIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
     if (appQuitting) return { ok: true };
+    if (taskbarLyricsMultiProtocol || (payload && payload.taskbarLyrics && typeof payload.taskbarLyrics === 'object')) {
+      applyDesktopLyricsOutputs(payload || {}, { updateEnabled: false });
+      return { ok: true };
+    }
     if (desktopLyricsRequestedEnabled) {
       createDesktopLyricsWindow(payload || {});
     } else if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
@@ -5425,6 +5723,7 @@ ipcMain.handle('mineradio-desktop-lyrics-get-displays', async (event) => {
 
 ipcMain.handle('mineradio-desktop-lyrics-set-dragging', async (_event, active, cancelled, sessionId) => {
   try {
+    if (taskbarLyricsMultiEntryForEvent(_event)) return { ok: false, error: 'TASKBAR_LYRICS_NATIVE_CONTROL' };
     if (!active && sessionId != null && !desktopLyricsTaskbarMode()) return { ok: false, error: 'STALE_TASKBAR_LYRICS_DRAG' };
     if (!desktopLyricsTaskbarMode()) return { ok: true };
     if (!isTrustedDesktopLyricsIpc(_event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
@@ -5477,14 +5776,24 @@ ipcMain.handle('mineradio-desktop-lyrics-set-dragging', async (_event, active, c
 
 ipcMain.handle('mineradio-desktop-lyrics-get-pending-taskbar-position', async (event) => {
   if (!isTrustedMainWindowIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
+  if (taskbarLyricsMultiProtocol) return { ok: true, pending: [...desktopLyricsPendingTaskbarPositions.values()] };
   return { ok: true, pending: desktopLyricsPendingTaskbarPosition };
 });
 
-ipcMain.handle('mineradio-desktop-lyrics-ack-taskbar-position', async (event, revision) => {
+ipcMain.handle('mineradio-desktop-lyrics-ack-taskbar-position', async (event, revision, displayId) => {
   if (!isTrustedMainWindowIpc(event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
   const value = Number(revision);
   if (!Number.isSafeInteger(value) || value < 1 || value > desktopLyricsTaskbarPositionRevision) {
     return { ok: false, error: 'INVALID_TASKBAR_POSITION_REVISION' };
+  }
+  if (taskbarLyricsMultiProtocol) {
+    const id = displayId == null ? null : String(displayId);
+    const pending = id == null ? null : desktopLyricsPendingTaskbarPositions.get(id);
+    if (!pending || pending.revision !== value) return { ok: false, error: 'STALE_TASKBAR_POSITION_REVISION' };
+    const target = taskbarLyricsTargets.find(item => item.displayId === id);
+    if (target) target.position = pending.position;
+    desktopLyricsPendingTaskbarPositions.delete(id);
+    return { ok: true };
   }
   if (desktopLyricsPendingTaskbarPosition && desktopLyricsPendingTaskbarPosition.revision !== value) {
     return { ok: false, error: 'STALE_TASKBAR_POSITION_REVISION' };
@@ -5495,6 +5804,7 @@ ipcMain.handle('mineradio-desktop-lyrics-ack-taskbar-position', async (event, re
 
 ipcMain.handle('mineradio-desktop-lyrics-set-pointer-capture', async (_event, active) => {
   try {
+    if (taskbarLyricsMultiEntryForEvent(_event)) return { ok: true, active: false };
     if (desktopLyricsTaskbarMode()) {
       if (!isTrustedDesktopLyricsIpc(_event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
       return { ok: true, active: desktopLyricsPointerCapture };
@@ -5509,6 +5819,11 @@ ipcMain.handle('mineradio-desktop-lyrics-set-pointer-capture', async (_event, ac
 
 ipcMain.handle('mineradio-desktop-lyrics-set-hot-bounds', async (_event, bounds, layoutId) => {
   try {
+    if (taskbarLyricsMultiProtocol) {
+      if (!isTrustedDesktopLyricsIpc(_event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
+      const entry = taskbarLyricsMultiEntryForEvent(_event);
+      if (entry) return { ok: entry.runtime.setHotBounds(bounds, layoutId) };
+    }
     if (desktopLyricsTaskbarMode()) {
       if (!isTrustedDesktopLyricsIpc(_event)) return { ok: false, error: 'UNTRUSTED_SENDER' };
       return { ok: !!taskbarLyricsRuntime && taskbarLyricsRuntime.setHotBounds(bounds, layoutId) };
@@ -5526,6 +5841,7 @@ ipcMain.handle('mineradio-desktop-lyrics-set-hot-bounds', async (_event, bounds,
 
 ipcMain.handle('mineradio-desktop-lyrics-set-lock-state', async (_event, locked) => {
   try {
+    if (taskbarLyricsMultiEntryForEvent(_event)) return { ok: false, error: 'TASKBAR_LYRICS_NATIVE_CONTROL' };
     if (desktopLyricsTaskbarMode()) return { ok: false, error: 'TASKBAR_LYRICS_CLICK_THROUGH' };
     desktopLyricsState = { ...desktopLyricsState, clickThrough: !!locked };
     if (desktopLyricsState.clickThrough !== false) desktopLyricsPointerCapture = false;
@@ -5539,6 +5855,7 @@ ipcMain.handle('mineradio-desktop-lyrics-set-lock-state', async (_event, locked)
 
 ipcMain.handle('mineradio-desktop-lyrics-move-by', async (_event, dx, dy, sessionId) => {
   try {
+    if (taskbarLyricsMultiEntryForEvent(_event)) return { ok: false, error: 'TASKBAR_LYRICS_NATIVE_CONTROL' };
     if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed()) return { ok: false, error: 'NO_DESKTOP_LYRICS_WINDOW' };
     if (sessionId != null && !desktopLyricsTaskbarMode()) return { ok: false, error: 'STALE_TASKBAR_LYRICS_DRAG' };
     if (desktopLyricsTaskbarMode()) {
@@ -6570,6 +6887,7 @@ if (!gotSingleInstanceLock) {
     }
     const handleDisplayLayoutChanged = (_event, _display, changedMetrics) => {
       positionDesktopLyricsWindow();
+      if (taskbarLyricsMultiProtocol) reconcileTaskbarLyricsRuntimes();
       broadcastDesktopLyricsDisplays();
       if (process.platform === 'win32' && !taskbarLyricsWatcher) {
         if (taskbarLyricsDisplayRefreshTimer) clearTimeout(taskbarLyricsDisplayRefreshTimer);
@@ -6617,6 +6935,8 @@ if (!gotSingleInstanceLock) {
     stopMemoryAutoTimer();
     unregisterFullDesktopEscapeShortcut();
     unregisterMineradioGlobalHotkeys();
+    taskbarLyricsMultiSuspended = true;
+    closeAllTaskbarLyricsMulti();
     closeDesktopLyricsWindow({ preservePreference: true });
     if (localServer && localServer.close) localServer.close();
     if (tray) {
@@ -6666,6 +6986,7 @@ if (!gotSingleInstanceLock) {
     let cleanupTimeout = null;
     const fullDesktopAndWallpaperEngineCleanup = (async () => {
       if (taskbarLyricsRuntimeClosing) await taskbarLyricsRuntimeClosing;
+      if (taskbarLyricsMultiClosings.size) await Promise.all([...taskbarLyricsMultiClosings.values()]);
       // A passive desktop host must become a verified top-level HWND before
       // its exact WE source/DWM companion is disposed. Running these in
       // parallel can race the native detach acknowledgement.

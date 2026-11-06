@@ -20,6 +20,11 @@ class TaskbarLyricsRuntime extends EventEmitter {
     this.state = {};
     this.hot = null;
     this.lastFrame = null;
+    this.lastRawPaint = null;
+    this.staleRawPaint = null;
+    this.awaitingGeometry = false;
+    this.pendingHostLayout = false;
+    this.geometryTimer = null;
     this.generation = 0;
     this.loaded = false;
     this.closed = false;
@@ -94,26 +99,48 @@ class TaskbarLyricsRuntime extends EventEmitter {
     this.generation += 1;
     this.hot = null;
     this.lastFrame = null;
+    if (this.geometryTimer) clearTimeout(this.geometryTimer);
+    this.geometryTimer = null;
+    this.awaitingGeometry = false;
+    this.pendingHostLayout = false;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.stopHost();
     this.sendState();
   }
 
-  setLayout(next) {
+  setLayout(next, nextState) {
     if (this.closed || !next || !next.handle || !next.pid || !next.physical || !next.logical) return false;
     const old = this.layout;
     const parentChanged = !old || old.handle !== next.handle || old.pid !== next.pid;
-    const viewportChanged = !old || parentChanged || old.displayId !== next.displayId || old.physical.width !== next.physical.width
-      || old.physical.height !== next.physical.height || old.logical.width !== next.logical.width
-      || old.logical.height !== next.logical.height || old.scaleFactor !== next.scaleFactor;
+    const geometryChanged = !!old && (old.physical.width !== next.physical.width || old.physical.height !== next.physical.height
+      || old.logical.width !== next.logical.width || old.logical.height !== next.logical.height || old.scaleFactor !== next.scaleFactor
+      || old.anchorX !== next.anchorX || old.referenceWidth !== next.referenceWidth);
+    const viewportChanged = !old || parentChanged || old.displayId !== next.displayId || old.targetId !== next.targetId || geometryChanged;
     const moved = !old || old.physical.x !== next.physical.x || old.physical.y !== next.physical.y
       || old.minX !== next.minX || old.maxX !== next.maxX;
     this.layout = next;
     if (viewportChanged) {
+      const sizeChanged = !!old && (old.physical.width !== next.physical.width || old.physical.height !== next.physical.height);
+      const last = this.lastRawPaint;
+      const ratioTolerance = 1 + next.physical.width / next.physical.height;
+      const oldRatioDiffers = last && Math.abs(last.targetWidth - next.physical.width * last.targetHeight / next.physical.height) > ratioTolerance;
+      this.staleRawPaint = sizeChanged && last && oldRatioDiffers
+        ? { width: last.width, height: last.height } : null;
       this.generation += 1;
       this.hot = null;
       this.lastFrame = null;
+      if (this.geometryTimer) clearTimeout(this.geometryTimer);
+      this.geometryTimer = null;
+      const carryPending = !parentChanged && this.pendingHostLayout;
+      this.awaitingGeometry = geometryChanged || carryPending;
+      this.pendingHostLayout = (geometryChanged || carryPending) && !parentChanged && !!this.host;
+      this.scheduleGeometryTimeout();
+      if (nextState) this.state = nextState;
+      if (Number.isFinite(next.referenceWidth) && Number.isFinite(next.anchorX)) {
+        this.state = { ...this.state, taskbarReferenceWidth: next.referenceWidth, taskbarAnchorX: next.anchorX,
+          taskbarViewportWidth: next.logical.width };
+      }
       this.applyViewport();
       this.sendState();
       this.requestHotBounds();
@@ -123,7 +150,7 @@ class TaskbarLyricsRuntime extends EventEmitter {
     }
     if (parentChanged && this.host) { this.stopHost(); return true; }
     if (!this.host) this.startHost();
-    if (this.host && (viewportChanged || moved)) this.sendLayout();
+    if (this.host && (viewportChanged || moved) && !this.pendingHostLayout) this.sendLayout();
     return true;
   }
 
@@ -146,7 +173,7 @@ class TaskbarLyricsRuntime extends EventEmitter {
     this.host = host;
     host.on('ready', () => {
       if (this.closed || this.host !== host) return;
-      this.sendLayout();
+      if (!this.pendingHostLayout) this.sendLayout();
       this.requestHotBounds();
       this.sendLastFrame();
       if (this.loaded && this.window && !this.window.isDestroyed() && typeof this.window.webContents.invalidate === 'function') {
@@ -157,6 +184,10 @@ class TaskbarLyricsRuntime extends EventEmitter {
     host.on('drag-end', event => {
       if (!this.closed && this.host === host && event && event.generation === this.generation) this.emit('drag-end', event);
     });
+    host.on('click-action', event => {
+      if (!this.closed && this.layout && this.host === host && event && event.generation === this.generation
+          && (event.action === 'next' || event.action === 'previous')) this.emit('click-action', event);
+    });
     host.on('host-error', error => { if (!this.closed && this.host === host) this.emit('runtime-error', error); });
     host.on('exit', info => {
       if (this.host !== host) return;
@@ -166,6 +197,7 @@ class TaskbarLyricsRuntime extends EventEmitter {
           this.generation += 1;
           this.hot = null;
           this.lastFrame = null;
+          this.scheduleGeometryTimeout();
           this.sendState();
           this.requestHotBounds();
           if (this.loaded && this.window && !this.window.isDestroyed() && typeof this.window.webContents.invalidate === 'function') {
@@ -198,6 +230,7 @@ class TaskbarLyricsRuntime extends EventEmitter {
     if (this.closed || Number(generation) !== this.generation || !this.layout) return false;
     if (bounds == null) {
       this.hot = null;
+      this.finishGeometryUpdate();
       this.sendLastFrame();
       return true;
     }
@@ -210,19 +243,49 @@ class TaskbarLyricsRuntime extends EventEmitter {
       return false;
     }
     this.hot = { left: values[0], top: values[1], right: values[2], bottom: values[3], viewportWidth: values[4], viewportHeight: values[5] };
+    this.finishGeometryUpdate();
     this.sendLastFrame();
     return true;
   }
 
+  finishGeometryUpdate() {
+    if (!this.awaitingGeometry) return;
+    this.awaitingGeometry = false;
+    if (this.geometryTimer) clearTimeout(this.geometryTimer);
+    this.geometryTimer = null;
+    if (this.loaded && this.window && !this.window.isDestroyed() && typeof this.window.webContents.invalidate === 'function') {
+      this.window.webContents.invalidate();
+    }
+  }
+
+  scheduleGeometryTimeout() {
+    if (this.geometryTimer) clearTimeout(this.geometryTimer);
+    this.geometryTimer = null;
+    if (!this.awaitingGeometry || this.closed) return;
+    const generation = this.generation;
+    this.geometryTimer = setTimeout(() => {
+      if (this.closed || generation !== this.generation || !this.awaitingGeometry) return;
+      this.hot = null;
+      this.finishGeometryUpdate();
+    }, 1000);
+    if (typeof this.geometryTimer.unref === 'function') this.geometryTimer.unref();
+  }
+
   onPaint(win, image) {
-    if (this.closed || this.window !== win || !this.layout || !image || image.isEmpty()) return;
+    if (this.closed || this.window !== win || !this.layout || this.awaitingGeometry || !image || image.isEmpty()) return;
     const size = image.getSize();
     const expected = this.layout.physical;
     if (!size.width || !size.height) return;
+    const tolerance = 1 + expected.width / expected.height;
+    if (Math.abs(size.width - expected.width * size.height / expected.height) > tolerance) return;
+    if (this.staleRawPaint && size.width === this.staleRawPaint.width && size.height === this.staleRawPaint.height) return;
     const output = size.width === expected.width && size.height === expected.height
       ? image : image.resize({ width: expected.width, height: expected.height, quality: 'better' });
     const pixels = output.toBitmap();
     if (!Buffer.isBuffer(pixels) || pixels.length !== expected.width * expected.height * 4) return;
+    this.staleRawPaint = null;
+    this.lastRawPaint = { width: size.width, height: size.height, targetWidth: expected.width, targetHeight: expected.height };
+    if (this.pendingHostLayout) { this.pendingHostLayout = false; this.sendLayout(); }
     this.lastFrame = { pixels, width: expected.width, height: expected.height, generation: this.generation };
     this.sendLastFrame();
   }
@@ -246,6 +309,8 @@ class TaskbarLyricsRuntime extends EventEmitter {
     this.closed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    if (this.geometryTimer) clearTimeout(this.geometryTimer);
+    this.geometryTimer = null;
     const host = this.host;
     this.closePromise = host ? new Promise(resolve => {
       const timeout = setTimeout(resolve, 2000);

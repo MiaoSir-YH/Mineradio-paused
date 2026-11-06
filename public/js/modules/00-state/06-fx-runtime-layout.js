@@ -22,6 +22,7 @@ function readSavedPlaybackVisualPreset() {
 var playbackVisualPreset = readSavedPlaybackVisualPreset();
 var startupVisualPreviewActive = false;
 var fx = Object.assign({}, fxDefaults, readSavedLyricLayout());
+ensureDesktopLyricsOutputs();
 normalizeDevelopmentLockedFxState();
 function clampPlaylistPanelFxSettings() {
   if (!fx) return;

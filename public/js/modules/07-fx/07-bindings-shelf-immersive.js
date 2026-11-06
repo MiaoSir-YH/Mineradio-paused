@@ -390,16 +390,16 @@ function toggleWallpaperModeFromUi() {
 }
 function toggleFx(key) {
   if (key === 'desktopLyricsTaskbar') {
-    if (fx.desktopLyricsTaskbar !== true && desktopLyricsDisplaysState.supported === false) {
+    var outputs = ensureDesktopLyricsOutputs();
+    if (outputs.taskbarEnabled !== true && desktopLyricsDisplaysState.supported === false) {
       showToast('当前系统不支持任务栏歌词');
       return;
     }
-    fx.desktopLyricsTaskbar = fx.desktopLyricsTaskbar !== true;
-    fx.desktopLyrics = true;
+    outputs.taskbarEnabled = outputs.taskbarEnabled !== true;
     updateFxInputs();
-    saveLyricLayout({ user: true, reason: key });
+    saveLyricLayout({ user: true, reason: 'desktopLyricsOutputs' });
     applyDesktopLyricsState(true);
-    showToast(fx.desktopLyricsTaskbar ? '已启用任务栏歌词' : '已恢复桌面歌词');
+    showToast(outputs.taskbarEnabled ? '已启用任务栏歌词' : '已关闭任务栏歌词');
     return;
   }
   if (isDevelopmentLockedFx(key)) {

@@ -11966,6 +11966,34 @@ body.desktop-shell.diy-mode #bottom-bar.stage-mode {
 }
 
 /* Display selection shares the console glass row but needs a full-width value. */
+.desktop-lyrics-display-list {
+  display: grid;
+  gap: 5px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.desktop-lyrics-display-row {
+  position: relative;
+  gap: 9px;
+  min-width: 0;
+}
+.desktop-lyrics-display-row input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  clip-path: inset(50%);
+}
+.desktop-lyrics-display-row:has(input:focus-visible) { outline: 1px solid rgba(var(--fc-accent-rgb), .76); outline-offset: 2px; }
+.desktop-lyrics-display-row .desktop-lyrics-display-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-lyrics-display-editing { flex: 0 0 auto; color: rgba(var(--fc-accent-rgb), .78); font-size: 10px; }
+.desktop-lyrics-display-row .dot { flex: 0 0 auto; }
+.desktop-lyrics-display-empty { padding: 6px; color: rgba(255, 255, 255, .45); font-size: 11px; }
+.fx-slider:has(> #fx-taskbarlyricssize),
+.fx-slider:has(> #fx-taskbarskylinespacing),
+.fx-slider:has(> #fx-taskbarlyricsopacity) {
+  grid-template-columns: minmax(110px, auto) minmax(0, 1fr) 44px;
+}
 #desktop-lyrics-display-control {
   grid-template-columns: minmax(78px, 92px) minmax(0, 1fr);
 }

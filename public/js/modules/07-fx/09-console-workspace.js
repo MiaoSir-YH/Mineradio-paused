@@ -113,7 +113,7 @@ var FX_CONSOLE_LAYOUT = [
         fxConsoleItem('t-lyricPauseHold', '暂停保留歌词', '暂停不隐藏')
       ] },
       { key: 'desktop', title: '桌面歌词', hint: '桌面层开关、位置、透明度和帧数', items: [
-        fxConsoleItem('t-desktopLyrics', '歌词总开关', '桌面 任务栏 置顶歌词'),
+        fxConsoleItem('t-desktopLyrics', '桌面歌词', '桌面 置顶歌词'),
         fxConsoleItem('t-desktopLyricsTaskbar', '任务栏歌词', 'Windows 底部任务栏 状态栏 歌词'),
         fxConsoleItem('t-desktopLyricsClickThrough', '桌面歌词锁定', '鼠标穿透 防误触'),
         fxConsoleItem('t-desktopLyricsCinema', '桌面歌词电影震动', '桌面歌词 鼓点'),
@@ -121,7 +121,12 @@ var FX_CONSOLE_LAYOUT = [
         fxConsoleItem('fx-desktoplyricssize', '桌面歌词大小', '桌面字号'),
         fxConsoleItem('fx-desktoplyricsopacity', '桌面歌词透明度', '桌面歌词透明'),
         fxConsoleItem('fx-desktoplyricsy', '桌面歌词高度', '桌面位置'),
-        fxConsoleItem('desktop-lyrics-display-control', '任务栏屏幕', '显示器 屏幕 任务栏'),
+        fxConsoleItem('desktop-lyrics-display-list', '任务栏显示屏', '显示器 屏幕 多选 离线 任务栏'),
+        fxConsoleItem('desktop-lyrics-display-control', '配置屏幕', '任务栏屏幕 显示器 屏幕 设置'),
+        fxConsoleItem('fx-taskbarlyricssize', '任务栏歌词大小', '任务栏字号 当前屏幕'),
+        fxConsoleItem('fx-taskbarskylinespacing', '词云与歌词间距', '任务栏天际屏词云 中央歌词留白'),
+        fxConsoleItem('fx-taskbarlyricsopacity', '任务栏歌词透明度', '当前屏幕 不透明度'),
+        fxConsoleItem('taskbar-lyrics-style-control', '当前屏幕歌词样式', '跟随 普通 天际屏 样式'),
         fxConsoleItem('desktop-lyrics-fps-seg', '桌面歌词帧率', '24 30 60 120 无上限 FPS')
       ] }
     ]

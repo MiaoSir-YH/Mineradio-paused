@@ -82,6 +82,8 @@ var fxDefaults = {
   desktopLyricsTaskbar: false,
   desktopLyricsTaskbarDisplayId: '',
   desktopLyricsTaskbarX: 0.15,
+  desktopLyricsTaskbarSize: 1,
+  desktopLyricsTaskbarSkylineSpacing: 0.5,
   desktopLyricsSize: 1.0,
   desktopLyricsOpacity: 0.92,
   desktopLyricsY: 0.76,

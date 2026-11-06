@@ -112,14 +112,16 @@ contextBridge.exposeInMainWorld('desktopWindow', {
     const listener = (_event, payload) => callback(payload || {});
     ipcRenderer.on('mineradio-desktop-lyrics-taskbar-position-changed', listener);
     ipcRenderer.invoke('mineradio-desktop-lyrics-get-pending-taskbar-position').then((result) => {
-      if (active && result && result.ok && result.pending) callback(result.pending);
+      if (!active || !result || !result.ok || !result.pending) return;
+      const pending = Array.isArray(result.pending) ? result.pending : [result.pending];
+      pending.forEach((item) => { if (active && item) callback(item); });
     }).catch(() => {});
     return () => {
       active = false;
       ipcRenderer.removeListener('mineradio-desktop-lyrics-taskbar-position-changed', listener);
     };
   },
-  ackDesktopLyricsTaskbarPositionChange: (revision) => ipcRenderer.invoke('mineradio-desktop-lyrics-ack-taskbar-position', revision),
+  ackDesktopLyricsTaskbarPositionChange: (revision, displayId) => ipcRenderer.invoke('mineradio-desktop-lyrics-ack-taskbar-position', revision, displayId),
   onDesktopLyricsDisplaysChanged: (callback) => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, payload) => callback(payload || {});

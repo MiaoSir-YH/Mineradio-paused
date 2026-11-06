@@ -35,15 +35,26 @@ function resolveTaskbarLyricsLayout(displays, taskbars, options = {}) {
   const taskbar = taskbarForDisplay(display, taskbars);
   if (!taskbar || taskbar.visibleBounds.height < 12 || taskbar.visibleBounds.width < 1) return null;
   const available = taskbar.visibleBounds;
-  const width = Math.min(available.width, 600, Math.max(220, Math.round(available.width * 0.35)));
+  const referenceWidth = Math.min(available.width, 600, Math.max(220, Math.round(available.width * 0.35)));
+  const rawSpacing = options.skylineSpacing == null || (typeof options.skylineSpacing === 'string' && !options.skylineSpacing.trim())
+    ? NaN : Number(options.skylineSpacing);
+  const spacing = Number.isFinite(rawSpacing) ? Math.max(0, Math.min(1, rawSpacing)) : 0.5;
+  const expansion = options.skyline === true ? Math.max(0, spacing - 0.5) * 0.8 : 0;
+  const width = Math.min(available.width, Math.round(referenceWidth * (1 + expansion)));
   const position = options.position == null || (typeof options.position === 'string' && !options.position.trim())
     ? NaN : Number(options.position);
   const ratio = Number.isFinite(position) ? Math.max(0, Math.min(1, position)) : 0.15;
+  const referenceX = Math.round(available.x + (available.width - referenceWidth) * ratio);
+  const anchor = referenceX + referenceWidth / 2;
+  const x = Math.round(Math.max(available.x, Math.min(available.x + available.width - width, anchor - width / 2)));
   return {
     displayId: String(display.id),
     taskbarBounds: { ...taskbar.bounds },
+    referenceWidth,
+    anchorX: anchor - x,
+    position: ratio,
     bounds: {
-      x: Math.round(available.x + (available.width - width) * ratio),
+      x,
       y: Math.round(available.y),
       width: Math.round(width),
       height: Math.round(available.height),
@@ -56,9 +67,11 @@ function taskbarLyricsPositionForX(displays, taskbars, options, x) {
   if (!Number.isFinite(Number(x))) return null;
   const left = resolveTaskbarLyricsLayout(displays, taskbars, { ...options, position: 0 });
   const right = resolveTaskbarLyricsLayout(displays, taskbars, { ...options, position: 1 });
-  if (!left || !right || left.displayId !== right.displayId) return null;
-  const travel = right.bounds.x - left.bounds.x;
-  const position = travel > 0 ? Math.max(0, Math.min(1, (Number(x) - left.bounds.x) / travel)) : 0;
+  const current = resolveTaskbarLyricsLayout(displays, taskbars, options);
+  if (!left || !right || !current || left.displayId !== right.displayId || current.displayId !== left.displayId) return null;
+  const start = left.bounds.x + left.anchorX;
+  const travel = right.bounds.x + right.anchorX - start;
+  const position = travel > 0 ? Math.max(0, Math.min(1, (Number(x) + current.anchorX - start) / travel)) : 0;
   return { position, displayId: left.displayId };
 }
 

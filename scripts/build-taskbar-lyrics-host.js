@@ -8,6 +8,7 @@ const { spawnSync } = require('node:child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
 const source = path.join(projectRoot, 'desktop', 'native', 'taskbar-lyrics-host.cs');
+const clickSequenceSource = path.join(projectRoot, 'desktop', 'native', 'taskbar-lyrics-click-sequence.cs');
 const manifest = path.join(projectRoot, 'desktop', 'native', 'taskbar-lyrics-host.manifest');
 
 function compileHost(output) {
@@ -18,7 +19,7 @@ function compileHost(output) {
   if (!compiler) throw new Error('The .NET Framework C# compiler was not found');
   fs.mkdirSync(path.dirname(output), { recursive: true });
   const result = spawnSync(compiler, [
-    '/nologo', '/target:exe', '/platform:x64', `/win32manifest:${manifest}`, `/out:${output}`, source,
+    '/nologo', '/target:exe', '/platform:x64', `/win32manifest:${manifest}`, `/out:${output}`, source, clickSequenceSource,
   ], { windowsHide: true, encoding: 'utf8' });
   if (result.error || result.status !== 0) {
     throw new Error(`Taskbar lyrics host compilation failed: ${result.error && result.error.message || result.stderr || result.stdout || result.status}`);
@@ -28,7 +29,7 @@ function compileHost(output) {
 }
 
 function ensureDevelopmentHost() {
-  const hash = crypto.createHash('sha256').update(fs.readFileSync(source)).update(fs.readFileSync(manifest)).digest('hex').slice(0, 20);
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(source)).update(fs.readFileSync(clickSequenceSource)).update(fs.readFileSync(manifest)).digest('hex').slice(0, 20);
   const dir = path.join(os.tmpdir(), 'mineradio-taskbar-lyrics-host', hash);
   const output = path.join(dir, 'taskbar-lyrics-host.exe');
   if (fs.existsSync(output)) return output;

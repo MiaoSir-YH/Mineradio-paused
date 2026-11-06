@@ -112,14 +112,133 @@ test('older or invalid settings use the taskbar position default without changin
   assert.equal(h.ctx.normalizeFxArchiveSnapshot({ desktopLyricsTaskbarX: 0 }).desktopLyricsTaskbarX, 0);
 });
 
-test('taskbar toggle enables lyrics, returns to desktop, and saves both choices', () => {
+test('taskbar font size and Skyline spacing have independent compatible defaults and survive save and share', () => {
+  const h = persistenceHarness();
+  h.store.set('mineradio-user-fx-archives-v1', '[]');
+  vm.runInContext(read('public/js/modules/07-fx/00-preset-archive-data.js'), h.ctx);
+  assert.equal(h.ctx.fxDefaults.desktopLyricsTaskbarSize, 1);
+  assert.equal(h.ctx.fxDefaults.desktopLyricsTaskbarSkylineSpacing, 0.5);
+
+  // A desktop size saved before these controls existed must not become the taskbar size.
+  const legacy = { desktopLyricsSize: 0.2 };
+  h.store.set('current', JSON.stringify(legacy));
+  for (const snapshot of [h.ctx.readSavedLyricLayout(), h.ctx.normalizeFxArchiveSnapshot(legacy)]) {
+    assert.equal(snapshot.desktopLyricsSize, 0.2);
+    assert.equal(snapshot.desktopLyricsTaskbarSize, 1);
+    assert.equal(snapshot.desktopLyricsTaskbarSkylineSpacing, 0.5);
+  }
+  for (const [input, size, spacing] of [
+    [{ desktopLyricsTaskbarSize:-2, desktopLyricsTaskbarSkylineSpacing:-1 }, 0.6, 0],
+    [{ desktopLyricsTaskbarSize:10, desktopLyricsTaskbarSkylineSpacing:2 }, 1.6, 1],
+  ]) {
+    h.store.set('current',JSON.stringify(input));
+    for (const snapshot of [h.ctx.readSavedLyricLayout(),h.ctx.normalizeFxArchiveSnapshot(input)]) {
+      assert.equal(snapshot.desktopLyricsTaskbarSize,size);
+      assert.equal(snapshot.desktopLyricsTaskbarSkylineSpacing,spacing);
+    }
+  }
+
+  for (const [size, spacing] of [[0.6, 0], [1, 0.5], [1.6, 1]]) {
+    Object.assign(h.ctx.fx, { desktopLyricsSize: 0.2, desktopLyricsTaskbarSize: size,
+      desktopLyricsTaskbarSkylineSpacing: spacing });
+    h.ctx.saveLyricLayout({ user: true, force: true, syncDisk: true, reason: 'taskbar-layout' });
+    const input = { desktopLyricsSize: 0.2, desktopLyricsTaskbarSize: size,
+      desktopLyricsTaskbarSkylineSpacing: spacing };
+    const compact = h.ctx.compactUserFxArchiveSnapshot(input);
+    for (const snapshot of [h.disk(), h.ctx.readSavedLyricLayout(),
+      h.ctx.normalizeFxArchiveSnapshot(input), h.ctx.expandUserFxArchiveSnapshot(compact)]) {
+      assert.equal(snapshot.desktopLyricsSize, 0.2);
+      assert.equal(snapshot.desktopLyricsTaskbarSize, size);
+      assert.equal(snapshot.desktopLyricsTaskbarSkylineSpacing, spacing);
+    }
+  }
+
+  h.ctx.fx.desktopLyricsTaskbarSkylineSpacing = 0;
+  h.ctx.saveLyricLayout({ user: true, syncDisk: true, reason: 'desktopLyricsTaskbarSkylineSpacing' });
+  const restored = h.ctx.readSavedLyricLayout();
+  assert.equal(restored.desktopLyricsTaskbarSkylineSpacing, 0);
+  assert.equal(restored.desktopLyricsTaskbarSize, 1.6);
+  assert.equal(restored.desktopLyricsSize, 0.2);
+  assert.equal(h.warnings.length, 0, `save failed: ${h.warnings.map(x => String(x[1])).join('; ')}`);
+});
+
+test('legacy exclusive lyric mode migrates to independent desktop and taskbar outputs', () => {
+  const h=persistenceHarness();
+  h.store.set('mineradio-user-fx-archives-v1','[]');
+  vm.runInContext(read('public/js/modules/07-fx/00-preset-archive-data.js'),h.ctx);
+  for(const [enabled,taskbar,desktopExpected,taskbarExpected] of [
+    [true,true,false,true],[false,true,false,false],[true,false,true,false],[false,false,false,false],
+  ]) {
+    const legacy={desktopLyrics:enabled,desktopLyricsTaskbar:taskbar,desktopLyricsTaskbarDisplayId:'202',
+      desktopLyricsTaskbarX:0,desktopLyricsTaskbarSize:1.4,desktopLyricsTaskbarSkylineSpacing:0.8,desktopLyricsOpacity:0.7};
+    h.store.set('current',JSON.stringify(legacy));
+    for(const restored of [h.ctx.readSavedLyricLayout(),h.ctx.normalizeFxArchiveSnapshot(legacy)]) {
+      assert.equal(restored.desktopLyrics,desktopExpected);
+      assert.equal(restored.desktopLyricsOutputs.version,1);
+      assert.equal(restored.desktopLyricsOutputs.taskbarEnabled,taskbarExpected);
+      const screen=restored.desktopLyricsOutputs.screens.find(value=>value.displayId==='202');
+      assert.ok(screen && screen.selected,'legacy selected display is preserved');
+      assert.equal(screen.position,0);
+      assert.equal(screen.size,1.4);
+      assert.equal(screen.skylineSpacing,0.8);
+      assert.equal(screen.opacity,0.7);
+      assert.equal(screen.style,'follow');
+    }
+  }
+});
+
+test('independent lyric outputs and disconnected or unselected screens survive save and share', () => {
+  const h=persistenceHarness();
+  h.store.set('mineradio-user-fx-archives-v1','[]');
+  vm.runInContext(read('public/js/modules/07-fx/00-preset-archive-data.js'),h.ctx);
+  const outputs={version:1,taskbarEnabled:true,screens:[
+    {displayId:'101',selected:true,position:0,size:0.6,skylineSpacing:0,opacity:0.7,style:'normal',label:'Primary'},
+    {displayId:'202',selected:true,position:1,size:1.6,skylineSpacing:1,opacity:0.9,style:'skyline',label:'Secondary'},
+    {displayId:'303',selected:false,position:0.3,size:1.2,skylineSpacing:0.4,opacity:0.8,style:'follow',label:'Offline'},
+  ]};
+  Object.assign(h.ctx.fx,{desktopLyrics:true,desktopLyricsOutputs:outputs});
+  h.ctx.saveLyricLayout({user:true,force:true,syncDisk:true,reason:'independent-lyric-outputs'});
+  const compact=h.ctx.compactUserFxArchiveSnapshot({desktopLyrics:true,desktopLyricsOutputs:outputs});
+  for(const snapshot of [h.disk(),h.ctx.readSavedLyricLayout(),
+    h.ctx.normalizeFxArchiveSnapshot({desktopLyrics:true,desktopLyricsOutputs:outputs}),
+    h.ctx.expandUserFxArchiveSnapshot(compact)]) {
+    assert.equal(snapshot.desktopLyrics,true);
+    assert.deepEqual(JSON.parse(JSON.stringify(snapshot.desktopLyricsOutputs)),outputs);
+  }
+  assert.equal(h.warnings.length,0,`save failed: ${h.warnings.map(x=>String(x[1])).join('; ')}`);
+});
+
+test('MR2 deltas distinguish an explicit default output configuration from legacy exclusive mode', () => {
+  const h=persistenceHarness();
+  h.store.set('mineradio-user-fx-archives-v1','[]');
+  vm.runInContext(read('public/js/modules/07-fx/00-preset-archive-data.js'),h.ctx);
+  const baseline=h.ctx.userFxShareBaselineSnapshot();
+  const input={...baseline,desktopLyrics:true,desktopLyricsTaskbar:true,
+    desktopLyricsOutputs:JSON.parse(JSON.stringify(baseline.desktopLyricsOutputs))};
+  const compact=h.ctx.compactUserFxArchiveSnapshot(input);
+  assert.equal(compact[0],'d','the near-default share should use MR2 delta encoding');
+  const index=h.ctx.USER_FX_SHARE_KEYS.indexOf('desktopLyricsOutputs');
+  assert.ok(index>=0 && compact[1].some((value,i)=>i%2===0 && value===index),
+    'a new delta must carry the output configuration even when it equals the baseline');
+  const restored=h.ctx.expandUserFxArchiveSnapshot(compact);
+  assert.equal(restored.desktopLyrics,true,'explicit modern desktop output must not be migrated as legacy');
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.desktopLyricsOutputs)),input.desktopLyricsOutputs);
+
+  const keys=h.ctx.USER_FX_SHARE_KEYS;
+  const legacyDelta=['d',[keys.indexOf('desktopLyrics'),true,keys.indexOf('desktopLyricsTaskbar'),true]];
+  const legacy=h.ctx.expandUserFxArchiveSnapshot(legacyDelta);
+  assert.equal(legacy.desktopLyrics,false,'old delta with taskbar mode should not also turn desktop on');
+  assert.equal(legacy.desktopLyricsOutputs.taskbarEnabled,true);
+});
+
+test('desktop and taskbar lyric switches change and save their own outputs independently', () => {
   const h = persistenceHarness();
   const applied = [];
   Object.assign(h.ctx, {
     desktopLyricsDisplaysState: { supported: true },
     updateFxInputs() {}, showToast() {}, syncFxUniforms() {},
     isDevelopmentLockedFx: () => false,
-    applyDesktopLyricsState() { applied.push([h.ctx.fx.desktopLyrics, h.ctx.fx.desktopLyricsTaskbar]); },
+    applyDesktopLyricsState() { applied.push([h.ctx.fx.desktopLyrics, h.ctx.fx.desktopLyricsOutputs.taskbarEnabled]); },
   });
   h.ctx.document.getElementById = () => null;
   const bindings = read('public/js/modules/07-fx/07-bindings-shelf-immersive.js');
@@ -127,28 +246,34 @@ test('taskbar toggle enables lyrics, returns to desktop, and saves both choices'
   const end = bindings.indexOf('function toggleFxPanel(', start);
   assert.ok(start >= 0 && end > start, 'missing fx toggle handler');
   vm.runInContext(bindings.slice(start, end), h.ctx);
-  Object.assign(h.ctx.fx, { desktopLyrics: false, desktopLyricsTaskbar: false });
+  Object.assign(h.ctx.fx, { desktopLyrics:false, desktopLyricsTaskbar:false,
+    desktopLyricsOutputs:{version:1,taskbarEnabled:false,screens:[{displayId:'101',selected:true,position:0.5,
+      size:1,skylineSpacing:0.5,opacity:0.92,style:'follow'}]} });
   h.ctx.saveLyricLayout({ user: true, force: true, syncDisk: true });
   h.ctx.window.desktopWindow.readCurrentFxAutosaveSync = () => null;
 
   h.ctx.toggleFx('desktopLyricsTaskbar');
   let saved = h.ctx.readSavedLyricLayout();
-  assert.equal(saved.desktopLyrics, true, 'opening taskbar lyrics also persists enabled state');
-  assert.equal(saved.desktopLyricsTaskbar, true);
+  assert.equal(saved.desktopLyrics, false, 'opening taskbar lyrics must not enable the desktop');
+  assert.equal(saved.desktopLyricsOutputs.taskbarEnabled, true);
+  assert.deepEqual(applied.at(-1), [false, true]);
+
+  h.ctx.toggleFx('desktopLyrics');
+  saved = h.ctx.readSavedLyricLayout();
+  assert.equal(saved.desktopLyrics, true);
+  assert.equal(saved.desktopLyricsOutputs.taskbarEnabled, true, 'enabling the desktop keeps taskbar lyrics on');
   assert.deepEqual(applied.at(-1), [true, true]);
 
   h.ctx.toggleFx('desktopLyricsTaskbar');
   saved = h.ctx.readSavedLyricLayout();
-  assert.equal(saved.desktopLyrics, true, 'turning off taskbar mode keeps desktop lyrics enabled');
-  assert.equal(saved.desktopLyricsTaskbar, false);
+  assert.equal(saved.desktopLyrics, true, 'turning off taskbar lyrics leaves desktop lyrics enabled');
+  assert.equal(saved.desktopLyricsOutputs.taskbarEnabled, false);
   assert.deepEqual(applied.at(-1), [true, false]);
-
-  h.ctx.toggleFx('desktopLyricsTaskbar');
   h.ctx.toggleFx('desktopLyrics');
   saved = h.ctx.readSavedLyricLayout();
-  assert.equal(saved.desktopLyrics, false, 'the master switch turns all lyrics off');
-  assert.equal(saved.desktopLyricsTaskbar, true, 'the selected mode survives master switch off');
-  assert.deepEqual(applied.at(-1), [false, true]);
+  assert.equal(saved.desktopLyrics,false);
+  assert.equal(saved.desktopLyricsOutputs.taskbarEnabled,false);
+  assert.deepEqual(applied.at(-1),[false,false]);
   assert.equal(h.warnings.length, 0, `save failed: ${h.warnings.map(x => String(x[1])).join('; ')}`);
 });
 
@@ -181,6 +306,7 @@ test('taskbar translation is separate from original lyric and follows paused pla
   assert.ok(start >= 0 && end > start, 'missing lyric snapshot functions');
   const ctx = vm.createContext({
     fx: { desktopLyricsTaskbar: true, lyricTranslationMode: 'current' },
+    ensureDesktopLyricsOutputs: () => ({taskbarEnabled:ctx.fx.desktopLyricsTaskbar}),
     playing: true, audio: { currentTime: 1, duration: 20 },
     lyricsLines: [{ t: 0, text: 'First line', translation: '第一行' }, { t: 3, text: 'Second line', translation: '第二行' }],
     stageLyrics: { currentText: 'Second line' },
@@ -216,16 +342,18 @@ test('enabling or forcing taskbar Skyline sends full lines; ordinary frames stay
       setDesktopLyricsEnabled(enabled, payload) { calls.push({ type: 'set', enabled, payload }); return Promise.resolve(); },
       updateDesktopLyrics(payload) { calls.push({ type: 'update', payload }); return Promise.resolve(); },
     }),
-    desktopOverlayPushState: {}, performance: { now: () => { now += 1000; return now; } },
+    desktopOverlayPushState: {}, desktopLyricsPositionAcksPending:0, desktopLyricsPositionApplyQueued:false,
+    performance: { now: () => { now += 1000; return now; } },
     desktopLyricsPushInterval: () => 8, desktopLyricsCurrentCustomFontId: () => '',
-    desktopLyricsPayload: () => ({ enabled: true, taskbarMode: true, text: 'Word', progress: 0.5, progressSpan: 4,
-      skyline: true, skylineKey: 'track-A', colors: {}, motion: {} }),
+    desktopLyricsPayload: () => ({ enabled: false,taskbarLyrics:{enabled:true,targets:[{style:'skyline'}]},
+      text:'Word',progress:0.5,progressSpan:4,skyline:false,skylineKey:'track-A',colors:{},motion:{} }),
     skylineDesktopLines: () => lines,
     normalizeDevelopmentLockedFxState() {}, console,
   });
   vm.runInContext(source.slice(start, end), ctx);
   ctx.applyDesktopLyricsState(true);
   assert.equal(calls[0].type, 'set');
+  assert.equal(calls[0].enabled,false,'taskbar-only output does not enable desktop lyrics');
   assert.deepEqual(calls[0].payload.skylineLines, lines);
   assert.equal(calls[1].type, 'update');
   assert.deepEqual(calls[1].payload.skylineLines, lines);
@@ -235,14 +363,17 @@ test('enabling or forcing taskbar Skyline sends full lines; ordinary frames stay
   assert.deepEqual(calls.at(-1).payload.skylineLines, lines, 'forced refresh resends lines even for the same track');
 });
 
-test('live lyric payload carries taskbar selection, position and the reduced size', () => {
+test('live lyric payload carries independent per-screen settings and desktop state', () => {
   const source = read('public/js/modules/10-shell/04-desktop-overlay-fullscreen.js');
   const start = source.indexOf('function desktopLyricsPayload(');
   const end = source.indexOf('function skylineDesktopLines(', start);
   assert.ok(start >= 0 && end > start, 'missing desktop lyrics payload function');
   const ctx = vm.createContext({
-    fxDefaults: { desktopLyricsSize: 1, desktopLyricsOpacity: 0.92, desktopLyricsY: 0.76, desktopLyricsTaskbarX: 0.15 },
-    fx: { desktopLyrics: true, desktopLyricsTaskbar: true, desktopLyricsTaskbarDisplayId: '123', desktopLyricsTaskbarX: 0, desktopLyricsSize: 0.2 },
+    fxDefaults: { desktopLyricsSize: 1, desktopLyricsTaskbarSize: 1, desktopLyricsTaskbarSkylineSpacing: 0.5,
+      desktopLyricsOpacity: 0.92, desktopLyricsY: 0.76, desktopLyricsTaskbarX: 0.15 },
+    fx: { desktopLyrics:true,desktopLyricsSize:0.2,desktopLyricsOutputs:{version:1,taskbarEnabled:true,screens:[
+      {displayId:'123',selected:true,position:0,size:1.6,skylineSpacing:0,opacity:0.7,style:'normal'},
+      {displayId:'456',selected:false,position:1,size:0.6,skylineSpacing:1,opacity:0.9,style:'skyline'}] } },
     currentDesktopSongMeta: () => ({ title: 'Title', artist: 'Artist' }),
     currentDesktopLyricSnapshot: () => ({ text: 'Line', progress: 0.25, progressSpan: 1 }),
     currentTaskbarLyricTranslation: () => '',
@@ -265,24 +396,41 @@ test('live lyric payload carries taskbar selection, position and the reduced siz
   assert.ok(normalizeStart >= 0 && normalizeEnd > normalizeStart, 'missing taskbar position normalization');
   vm.runInContext(persistenceSource.slice(normalizeStart, normalizeEnd), ctx);
   vm.runInContext(source.slice(start, end), ctx);
+  const screen=ctx.fx.desktopLyricsOutputs.screens[0];
   for (const position of [0, 0.5, 1]) {
-    ctx.fx.desktopLyricsTaskbarX = position;
+    screen.position=position;
     const payload = ctx.desktopLyricsPayload();
     assert.equal(payload.enabled, true);
-    assert.equal(payload.taskbarMode, true);
-    assert.equal(payload.taskbarDisplayId, '123');
-    assert.equal(payload.taskbarPosition, position);
+    assert.equal(payload.taskbarLyrics.enabled,true);
+    assert.equal(payload.taskbarLyrics.targets.length,1,'unselected screens are retained in settings but not emitted');
+    assert.equal(payload.taskbarLyrics.targets[0].displayId,'123');
+    assert.equal(payload.taskbarLyrics.targets[0].position,position);
     assert.equal(payload.size, 0.2);
+    assert.equal(payload.taskbarLyrics.targets[0].size,1.6);
+    assert.equal(payload.taskbarLyrics.targets[0].skylineSpacing,0);
+    assert.equal(payload.taskbarLyrics.targets[0].opacity,0.7);
+    assert.equal(payload.taskbarLyrics.targets[0].style,'normal');
     assert.equal(payload.text, 'Line');
   }
-  for (const position of [null, '', '   ', 'invalid']) {
-    ctx.fx.desktopLyricsTaskbarX = position;
-    assert.equal(ctx.desktopLyricsPayload().taskbarPosition, 0.15);
+  for (const [size,spacing] of [[0.6,0],[1,0.5],[1.6,1]]) {
+    screen.size=size;screen.skylineSpacing=spacing;
+    const payload=ctx.desktopLyricsPayload();
+    assert.equal(payload.size,0.2);
+    assert.equal(payload.taskbarLyrics.targets[0].size,size);
+    assert.equal(payload.taskbarLyrics.targets[0].skylineSpacing,spacing);
   }
-  ctx.fx.desktopLyricsTaskbar = false;
-  const desktop = ctx.desktopLyricsPayload();
-  assert.equal(desktop.enabled, true);
-  assert.equal(desktop.taskbarMode, false);
+  for (const position of [null, '', '   ', 'invalid']) {
+    screen.position=position;
+    assert.equal(ctx.desktopLyricsPayload().taskbarLyrics.targets[0].position,0.15);
+  }
+  ctx.fx.desktopLyrics=false;
+  const taskbarOnly=ctx.desktopLyricsPayload();
+  assert.equal(taskbarOnly.enabled,false);
+  assert.equal(taskbarOnly.taskbarLyrics.enabled,true);
+  ctx.fx.desktopLyrics=true;ctx.fx.desktopLyricsOutputs.taskbarEnabled=false;
+  const desktopOnly=ctx.desktopLyricsPayload();
+  assert.equal(desktopOnly.enabled,true);
+  assert.equal(desktopOnly.taskbarLyrics.enabled,false);
 
   ctx.fx.lyricSkyline = true;
   ctx.fx.desktopLyricsCinema = true;
@@ -294,9 +442,15 @@ test('live lyric payload carries taskbar selection, position and the reduced siz
   ctx.desktopLyricsMotionPayload = () => ({ lyricGlow: true, lyricGlowBeat: true, beatPulse: 0.8, bass: 0.3 });
   ctx.desktopLyricsPlaybackPayload = () => ({ time: 2.5, rate: 1 });
   ctx.desktopOverlayColors = () => ({ primary: '#eee', highlight: '#fc0' });
-  ctx.fx.desktopLyricsTaskbar = true;
+  ctx.fx.desktopLyricsOutputs.taskbarEnabled=true;
+  ctx.fx.desktopLyricsOutputs.screens[1].selected=true;
+  ctx.fx.lyricSkyline=false;
+  const forcedSkyline=ctx.desktopLyricsPayload(true,true);
+  assert.equal(forcedSkyline.skyline,false,'a forced screen does not change the desktop style');
+  assert.equal(forcedSkyline.skylineKey,'fixture-line-signature','a forced screen still requests Skyline assets');
+  ctx.fx.lyricSkyline=true;
   const taskbarEffects = ctx.desktopLyricsPayload(true, true);
-  ctx.fx.desktopLyricsTaskbar = false;
+  ctx.fx.desktopLyricsOutputs.taskbarEnabled=false;
   const desktopEffects = ctx.desktopLyricsPayload(true, true);
   assert.equal(taskbarEffects.skyline, true, 'taskbar retains the active Skyline effect');
   assert.equal(taskbarEffects.skylineKey, 'fixture-line-signature');

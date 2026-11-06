@@ -70,6 +70,75 @@ function normalizeDesktopLyricsTaskbarX(value) {
   if (value == null || (typeof value === 'string' && !value.trim())) value = fxDefaults.desktopLyricsTaskbarX;
   return layoutNumber(value, fxDefaults.desktopLyricsTaskbarX, 0, 1);
 }
+function normalizeDesktopLyricsTaskbarSize(value) {
+  if (value == null || (typeof value === 'string' && !value.trim())) value = fxDefaults.desktopLyricsTaskbarSize;
+  return layoutNumber(value, fxDefaults.desktopLyricsTaskbarSize, 0.6, 1.6);
+}
+function normalizeDesktopLyricsTaskbarSkylineSpacing(value) {
+  if (value == null || (typeof value === 'string' && !value.trim())) value = fxDefaults.desktopLyricsTaskbarSkylineSpacing;
+  return layoutNumber(value, fxDefaults.desktopLyricsTaskbarSkylineSpacing, 0, 1);
+}
+function hasDesktopLyricsOutputs(raw) {
+  return !!(raw && raw.desktopLyricsOutputs && typeof raw.desktopLyricsOutputs === 'object' && !Array.isArray(raw.desktopLyricsOutputs));
+}
+function normalizeDesktopLyricsDesktopEnabled(raw) {
+  return !!(raw && raw.desktopLyrics === true && (hasDesktopLyricsOutputs(raw) || raw.desktopLyricsTaskbar !== true));
+}
+function normalizeDesktopLyricsOutputs(raw) {
+  raw = raw && typeof raw === 'object' ? raw : {};
+  var configured = hasDesktopLyricsOutputs(raw);
+  var source = configured ? raw.desktopLyricsOutputs : {};
+  var legacyOpacityValue = raw.desktopLyricsOpacity;
+  if (legacyOpacityValue == null || (typeof legacyOpacityValue === 'string' && !legacyOpacityValue.trim())) legacyOpacityValue = fxDefaults.desktopLyricsOpacity;
+  var legacyOpacity = layoutNumber(legacyOpacityValue, fxDefaults.desktopLyricsOpacity, .28, 1);
+  var legacy = {
+    displayId: raw.desktopLyricsTaskbarDisplayId == null ? '' : String(raw.desktopLyricsTaskbarDisplayId),
+    selected: true,
+    position: normalizeDesktopLyricsTaskbarX(raw.desktopLyricsTaskbarX),
+    size: normalizeDesktopLyricsTaskbarSize(raw.desktopLyricsTaskbarSize),
+    skylineSpacing: normalizeDesktopLyricsTaskbarSkylineSpacing(raw.desktopLyricsTaskbarSkylineSpacing),
+    opacity: legacyOpacity,
+    style: 'follow'
+  };
+  var input = configured && Array.isArray(source.screens) ? source.screens : (configured ? [] : [legacy]);
+  var screens = [];
+  input.slice(0, 64).forEach(function (screen) {
+    if (!screen || typeof screen !== 'object') return;
+    var id = screen.displayId == null ? '' : String(screen.displayId);
+    if (id !== '' && !/^-?\d{1,32}$/.test(id)) return;
+    if (screens.some(function (existing) { return existing.displayId === id; })) return;
+    var opacity = screen.opacity;
+    if (opacity == null || (typeof opacity === 'string' && !opacity.trim())) opacity = legacyOpacity;
+    screens.push({
+      displayId: id,
+      selected: screen.selected === true,
+      position: normalizeDesktopLyricsTaskbarX(screen.position),
+      size: normalizeDesktopLyricsTaskbarSize(screen.size),
+      skylineSpacing: normalizeDesktopLyricsTaskbarSkylineSpacing(screen.skylineSpacing),
+      opacity: layoutNumber(opacity, legacyOpacity, .28, 1),
+      style: /^(normal|skyline)$/.test(screen.style) ? screen.style : 'follow',
+      label: String(screen.label || '').slice(0, 160)
+    });
+  });
+  return {
+    version: 1,
+    taskbarEnabled: configured ? source.taskbarEnabled === true : (raw.desktopLyrics === true && raw.desktopLyricsTaskbar === true),
+    screens: screens
+  };
+}
+function ensureDesktopLyricsOutputs() {
+  if (!hasDesktopLyricsOutputs(fx)) {
+    var desktopEnabled = normalizeDesktopLyricsDesktopEnabled(fx);
+    fx.desktopLyricsOutputs = normalizeDesktopLyricsOutputs(fx);
+    fx.desktopLyrics = desktopEnabled;
+  }
+  return fx.desktopLyricsOutputs;
+}
+function desktopLyricsAnyEnabled() {
+  if (!fx) return false;
+  var outputs = ensureDesktopLyricsOutputs();
+  return fx.desktopLyrics === true || outputs.taskbarEnabled === true;
+}
 function layoutInteger(value, fallback, min, max) {
   return Math.round(layoutNumber(value, fallback, min, max));
 }
@@ -325,10 +394,13 @@ function readSavedLyricLayout() {
       backgroundMediaCropX: savedBgCropX,
       backgroundMediaCropY: savedBgCropY,
       backgroundMediaZoom: savedBgZoom,
-      desktopLyrics: raw.desktopLyrics === true,
+      desktopLyrics: normalizeDesktopLyricsDesktopEnabled(raw),
+      desktopLyricsOutputs: normalizeDesktopLyricsOutputs(raw),
       desktopLyricsTaskbar: raw.desktopLyricsTaskbar === true,
       desktopLyricsTaskbarDisplayId: raw.desktopLyricsTaskbarDisplayId == null ? '' : String(raw.desktopLyricsTaskbarDisplayId).slice(0, 128),
       desktopLyricsTaskbarX: normalizeDesktopLyricsTaskbarX(raw.desktopLyricsTaskbarX),
+      desktopLyricsTaskbarSize: normalizeDesktopLyricsTaskbarSize(raw.desktopLyricsTaskbarSize),
+      desktopLyricsTaskbarSkylineSpacing: normalizeDesktopLyricsTaskbarSkylineSpacing(raw.desktopLyricsTaskbarSkylineSpacing),
       desktopLyricsSize: clampRange(Number(raw.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.20, 1.55),
       desktopLyricsOpacity: clampRange(raw.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(raw.desktopLyricsOpacity), 0.28, 1),
       desktopLyricsY: clampRange(raw.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(raw.desktopLyricsY), 0.08, 0.92),
@@ -564,8 +636,9 @@ function currentFxAutosaveTouchedKeys(reason, payload) {
     shelfCameraMode: ['shelfCameraMode', 'shelfAngleY', 'shelfAngleYManual'],
     shelfPresence: ['shelfPresence', 'shelfPinnedOpen'],
     shelfAccentColor: ['shelfAccentColor'],
-    desktopLyrics: ['desktopLyrics'],
-    desktopLyricsTaskbar: ['desktopLyricsTaskbar', 'desktopLyrics'],
+    desktopLyrics: ['desktopLyrics', 'desktopLyricsOutputs'],
+    desktopLyricsTaskbar: ['desktopLyrics', 'desktopLyricsOutputs'],
+    desktopLyricsOutputs: ['desktopLyrics', 'desktopLyricsOutputs'],
     desktopLyricsClickThrough: ['desktopLyricsClickThrough'],
     desktopLyricsFps: ['desktopLyricsFps'],
     performanceBackground: ['performanceBackground', 'liveBackgroundKeep'],
@@ -822,9 +895,12 @@ function saveLyricLayout(opts) {
       backgroundMediaCropY: clampRange(fx.backgroundMediaCropY == null ? fxDefaults.backgroundMediaCropY : Number(fx.backgroundMediaCropY), 0, 100),
       backgroundMediaZoom: clampRange(fx.backgroundMediaZoom == null ? fxDefaults.backgroundMediaZoom : Number(fx.backgroundMediaZoom), 1, 2.8),
       desktopLyrics: !!fx.desktopLyrics,
+      desktopLyricsOutputs: normalizeDesktopLyricsOutputs(fx),
       desktopLyricsTaskbar: fx.desktopLyricsTaskbar === true,
       desktopLyricsTaskbarDisplayId: fx.desktopLyricsTaskbarDisplayId == null ? '' : String(fx.desktopLyricsTaskbarDisplayId).slice(0, 128),
       desktopLyricsTaskbarX: normalizeDesktopLyricsTaskbarX(fx.desktopLyricsTaskbarX),
+      desktopLyricsTaskbarSize: normalizeDesktopLyricsTaskbarSize(fx.desktopLyricsTaskbarSize),
+      desktopLyricsTaskbarSkylineSpacing: normalizeDesktopLyricsTaskbarSkylineSpacing(fx.desktopLyricsTaskbarSkylineSpacing),
       desktopLyricsSize: clampRange(Number(fx.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.20, 1.55),
       desktopLyricsOpacity: clampRange(fx.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(fx.desktopLyricsOpacity), 0.28, 1),
       desktopLyricsY: clampRange(fx.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(fx.desktopLyricsY), 0.08, 0.92),

@@ -278,7 +278,10 @@ var USER_FX_SHARE_KEYS = [
   'gestureSensitivity',
   'desktopLyricsTaskbar',
   'desktopLyricsTaskbarDisplayId',
-  'desktopLyricsTaskbarX'
+  'desktopLyricsTaskbarX',
+  'desktopLyricsTaskbarSize',
+  'desktopLyricsTaskbarSkylineSpacing',
+  'desktopLyricsOutputs'
 ];
 function defaultUserFxArchiveName(index) {
   return '存档 ' + (index + 1);
@@ -419,10 +422,13 @@ function normalizeFxArchiveSnapshot(raw) {
     lyricVerticalFloat: raw.lyricVerticalFloat !== false,
     backgroundStarRiver: raw.backgroundStarRiver !== false,
     lyricPauseHold: raw.lyricPauseHold !== false,
-    desktopLyrics: !!raw.desktopLyrics,
+    desktopLyrics: normalizeDesktopLyricsDesktopEnabled(raw),
+    desktopLyricsOutputs: normalizeDesktopLyricsOutputs(raw),
     desktopLyricsTaskbar: raw.desktopLyricsTaskbar === true,
     desktopLyricsTaskbarDisplayId: raw.desktopLyricsTaskbarDisplayId == null ? '' : String(raw.desktopLyricsTaskbarDisplayId).slice(0, 128),
     desktopLyricsTaskbarX: normalizeDesktopLyricsTaskbarX(raw.desktopLyricsTaskbarX),
+    desktopLyricsTaskbarSize: normalizeDesktopLyricsTaskbarSize(raw.desktopLyricsTaskbarSize),
+    desktopLyricsTaskbarSkylineSpacing: normalizeDesktopLyricsTaskbarSkylineSpacing(raw.desktopLyricsTaskbarSkylineSpacing),
     desktopLyricsSize: archiveNumber(raw, 'desktopLyricsSize', fxDefaults.desktopLyricsSize, 0.20, 1.55),
     desktopLyricsOpacity: archiveNumber(raw, 'desktopLyricsOpacity', fxDefaults.desktopLyricsOpacity, 0.28, 1),
     desktopLyricsY: archiveNumber(raw, 'desktopLyricsY', fxDefaults.desktopLyricsY, 0.08, 0.92),
@@ -925,7 +931,7 @@ function compactUserFxArchiveSnapshot(snapshot) {
   var base = userFxShareBaselineSnapshot();
   var delta = [];
   USER_FX_SHARE_KEYS.forEach(function (key, index) {
-    if (!userFxShareValueEqual(data[key], base[key])) delta.push(index, data[key]);
+    if (key === 'desktopLyricsOutputs' || !userFxShareValueEqual(data[key], base[key])) delta.push(index, data[key]);
   });
   var compactDelta = [USER_FX_SHARE_COMPACT_DELTA, delta];
   var compactFull = [USER_FX_SHARE_COMPACT_FULL, full];
@@ -938,10 +944,16 @@ function expandUserFxArchiveSnapshot(compact) {
   if (!Array.isArray(values)) return null;
   var raw = mode === USER_FX_SHARE_COMPACT_DELTA ? userFxShareBaselineSnapshot() : {};
   if (mode === USER_FX_SHARE_COMPACT_DELTA) {
+    var outputsIndex = USER_FX_SHARE_KEYS.indexOf('desktopLyricsOutputs');
+    var includesOutputs = false;
     for (var i = 0; i < values.length - 1; i += 2) {
       var deltaIndex = Math.floor(Number(values[i]));
+      if (deltaIndex === outputsIndex) includesOutputs = true;
       if (deltaIndex >= 0 && deltaIndex < USER_FX_SHARE_KEYS.length) raw[USER_FX_SHARE_KEYS[deltaIndex]] = values[i + 1];
     }
+    // Older MR2 deltas predate this field; do not let the new baseline hide
+    // the legacy desktop/taskbar-mode migration.
+    if (!includesOutputs) delete raw.desktopLyricsOutputs;
   } else {
     USER_FX_SHARE_KEYS.forEach(function (key, index) {
       if (index < values.length) raw[key] = values[index];

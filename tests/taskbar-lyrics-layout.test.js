@@ -111,3 +111,51 @@ test('drag x maps to the selected taskbar position in DIP and clamps at both edg
   assert.equal(taskbarLyricsPositionForX([primary, secondary], bottomBars, options, NaN), null);
   assert.equal(taskbarLyricsPositionForX([primary, secondary], [bottomBars[0], { ...bottomBars[1], visible: false }], options, -864), null);
 });
+
+test('Skyline gap expands the native slot without moving the lyric anchor, including at both edges', () => {
+  const displays=[primary,secondary],bars=bottomBars;
+  for(const position of [0,0.15,0.5,1]) {
+    const options={displayId:'202',primaryDisplayId:'101',position,skyline:true};
+    const original=resolveTaskbarLyricsLayout(displays,bars,{...options,skylineSpacing:0.5});
+    const wide=resolveTaskbarLyricsLayout(displays,bars,{...options,skylineSpacing:1});
+    const restored=resolveTaskbarLyricsLayout(displays,bars,{...options,skylineSpacing:0.5});
+    assert.equal(original.bounds.width,448);
+    assert.equal(wide.bounds.width,627);
+    assert.equal(wide.referenceWidth,448);
+    assert.ok(Number.isFinite(wide.anchorX) && wide.anchorX>=0 && wide.anchorX<=wide.bounds.width);
+    assert.ok(Math.abs((wide.bounds.x+wide.anchorX)-(original.bounds.x+original.bounds.width/2))<=0.5,
+      `spacing change moved the screen anchor at position ${position}`);
+    assert.deepEqual(restored.bounds,original.bounds,'reducing the gap must restore the original window bounds');
+    assert.equal(wide.bounds.y,original.bounds.y);assert.equal(wide.bounds.height,original.bounds.height);
+    assert.equal(wide.displayId,'202');
+  }
+  const normal=resolveTaskbarLyricsLayout([primary],[bottomBars[0]],
+    {displayId:'101',primaryDisplayId:'101',position:0.15,skyline:false,skylineSpacing:1});
+  assert.equal(normal.bounds.width,600,'ordinary lyric slots do not grow with the Skyline gap');
+});
+
+test('expanded Skyline slot is capped to a narrow taskbar without moving the anchor', () => {
+  const display={id:303,scaleFactor:1,bounds:{x:-230,y:0,width:230,height:500}};
+  const bars=[{displayId:'303',bounds:{x:-230,y:460,width:230,height:40}}];
+  for(const position of [0,0.5,1]) {
+    const options={displayId:'303',primaryDisplayId:'303',position,skyline:true};
+    const base=resolveTaskbarLyricsLayout([display],bars,{...options,skylineSpacing:0.5});
+    const wide=resolveTaskbarLyricsLayout([display],bars,{...options,skylineSpacing:1});
+    assert.equal(base.bounds.width,220);assert.equal(wide.bounds.width,230);
+    assert.equal(wide.bounds.x,-230);assert.equal(wide.bounds.x+wide.bounds.width,0);
+    assert.ok(Math.abs(wide.bounds.x+wide.anchorX-(base.bounds.x+base.bounds.width/2))<=0.5);
+  }
+});
+
+test('dragging an expanded slot persists a position relative to the original lyric anchor', () => {
+  const options={displayId:'202',primaryDisplayId:'101',position:0.15,skyline:true,skylineSpacing:1};
+  const wide=resolveTaskbarLyricsLayout([primary,secondary],bottomBars,options);
+  const reference=resolveTaskbarLyricsLayout([primary,secondary],bottomBars,{...options,skylineSpacing:0.5});
+  const travel=secondary.bounds.width-reference.bounds.width;
+  const before=taskbarLyricsPositionForX([primary,secondary],bottomBars,options,wide.bounds.x);
+  const after=taskbarLyricsPositionForX([primary,secondary],bottomBars,options,wide.bounds.x+60);
+  assert.ok(Math.abs(before.position-options.position)<=1/travel);
+  assert.ok(Math.abs(after.position-(options.position+60/travel))<=1/travel);
+  assert.equal(taskbarLyricsPositionForX([primary,secondary],bottomBars,options,-10000).position,0);
+  assert.equal(taskbarLyricsPositionForX([primary,secondary],bottomBars,options,10000).position,1);
+});

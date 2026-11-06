@@ -31,7 +31,13 @@ internal static class TaskbarLyricsHost {
   [DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr window);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
   [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr window, ref POINT point);
+  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr window, ref POINT point);
   [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT point);
+  [DllImport("user32.dll")] static extern uint GetDoubleClickTime();
+  [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")] static extern int GetSystemMetricsForDpi(int index, uint dpi);
+  [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
+  [DllImport("user32.dll")] static extern int GetMessageTime();
   [DllImport("user32.dll")] static extern IntPtr SetCapture(IntPtr window);
   [DllImport("user32.dll")] static extern bool ReleaseCapture();
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
@@ -54,6 +60,7 @@ internal static class TaskbarLyricsHost {
   [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
   [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+  [DllImport("kernel32.dll")] static extern uint GetTickCount();
 
   sealed class Layout { public int x, y, width, height, minX, maxX, generation, threshold; }
   sealed class Frame { public int sequence, width, height, left, top, right, bottom, opacity, generation; public byte[] pixels; }
@@ -63,8 +70,10 @@ internal static class TaskbarLyricsHost {
   static Layout layout, pendingLayout;
   static Frame pendingFrame;
   static int layoutNotification, frameNotification, received, dropped, drawn, dragStartX, dragStartMouseX;
+  static POINT clickStartPoint;
   static bool dragging, dragMoved;
   static string closeReason = "input-closed";
+  static readonly TaskbarLyricsClickSequence clicks = new TaskbarLyricsClickSequence();
 
   static void Emit(string value) { output.TryAdd(value); }
   static void OutputLoop() {
@@ -119,11 +128,32 @@ internal static class TaskbarLyricsHost {
     if(bitmap==IntPtr.Zero || bitmapBits==IntPtr.Zero) return false;
     oldBitmap=SelectObject(memoryDc,bitmap);return true;
   }
+  static void CancelClicks() { KillTimer(child,new UIntPtr(2)); clicks.Cancel(); }
+  static void ArmClickTimer() {
+    KillTimer(child,new UIntPtr(2));
+    int wait=clicks.WaitMilliseconds(GetTickCount());
+    if(wait>=0) SetTimer(child,new UIntPtr(2),(uint)Math.Max(10,wait),IntPtr.Zero);
+  }
+  static void EmitClickAction(string action) {
+    if(layout==null || (action!="next" && action!="previous")) return;
+    Emit("{\"kind\":\"click-action\",\"action\":\""+action+"\",\"generation\":"+layout.generation+"}");
+  }
+  static int DoubleClickMetric(int index) {
+    try { uint dpi=GetDpiForWindow(child); int value=GetSystemMetricsForDpi(index,dpi==0?96u:dpi); if(value>0)return value; }
+    catch(EntryPointNotFoundException) { }
+    return Math.Max(1,GetSystemMetrics(index));
+  }
+  static POINT MouseMessageScreenPoint(IntPtr window,IntPtr param) {
+    long value=param.ToInt64();
+    POINT point=new POINT {x=unchecked((short)(value&0xffff)),y=unchecked((short)((value>>16)&0xffff))};
+    ClientToScreen(window,ref point);return point;
+  }
   static void ApplyPendingLayout() {
     Interlocked.Exchange(ref layoutNotification,0);
     Layout next=Interlocked.Exchange(ref pendingLayout,null);
     if(next==null) return;
     if(next.width<=0 || next.height<=0 || next.maxX<next.minX || next.generation<=0 || (long)next.width*next.height*4>MaxFrameBytes) return;
+    if(layout!=null && (layout.generation!=next.generation || (!dragging && (layout.x!=next.x || layout.y!=next.y || layout.width!=next.width || layout.height!=next.height)))) CancelClicks();
     if(dragging) {
       if(layout==null || layout.generation!=next.generation) { dragging=false; dragMoved=false; ReleaseCapture(); }
       else { RECT current; if(GetWindowRect(child,out current)) next.x=Math.Max(next.minX,Math.Min(next.maxX,current.left)); }
@@ -162,20 +192,35 @@ internal static class TaskbarLyricsHost {
   }
   static IntPtr WindowMessage(IntPtr window,uint msg,IntPtr wp,IntPtr lp) {
     if(msg==0x21) return new IntPtr(3); // MA_NOACTIVATE: do not focus, do deliver the click.
-    if(msg==0x201 && layout!=null) { POINT p;RECT r;GetCursorPos(out p);GetWindowRect(window,out r);dragStartMouseX=p.x;dragStartX=r.left;dragging=true;dragMoved=false;SetCapture(window);return IntPtr.Zero; }
+    if(msg==0x201 && layout!=null) {
+      POINT p;RECT r;GetCursorPos(out p);GetWindowRect(window,out r);
+      dragStartMouseX=p.x;dragStartX=r.left;dragging=true;dragMoved=false;
+      POINT down=MouseMessageScreenPoint(window,lp);
+      clickStartPoint=down;
+      KillTimer(child,new UIntPtr(2));
+      clicks.Press(unchecked((uint)GetMessageTime()),down.x,down.y,layout.generation,GetDoubleClickTime(),DoubleClickMetric(36),DoubleClickMetric(37));
+      SetCapture(window);return IntPtr.Zero;
+    }
     if(msg==0x200 && dragging && layout!=null) {
       POINT p;GetCursorPos(out p);int delta=p.x-dragStartMouseX;
+      POINT move=MouseMessageScreenPoint(window,lp);
+      if(Math.Abs((long)move.x-clickStartPoint.x)>layout.threshold || Math.Abs((long)move.y-clickStartPoint.y)>layout.threshold) CancelClicks();
       if(!dragMoved && Math.Abs((long)delta)<=layout.threshold) return IntPtr.Zero;
+      if(!dragMoved) CancelClicks();
       dragMoved=true; int next=Math.Max(layout.minX,Math.Min(layout.maxX,dragStartX+delta));
       POINT client=new POINT {x=next,y=layout.y};ScreenToClient(tray,ref client);
       SetWindowPos(window,IntPtr.Zero,client.x,client.y,0,0,0x0015);return IntPtr.Zero;
     }
     if(msg==0x202 && dragging) {
+      POINT up=MouseMessageScreenPoint(window,lp);
+      bool clickCancelled=dragMoved || layout==null || Math.Abs((long)up.x-clickStartPoint.x)>layout.threshold
+        || Math.Abs((long)up.y-clickStartPoint.y)>layout.threshold;
       bool moved=dragMoved; dragging=false;dragMoved=false;ReleaseCapture();RECT r;GetWindowRect(window,out r);
-      if(moved && r.left!=dragStartX) Emit("{\"kind\":\"drag-end\",\"x\":"+r.left+",\"generation\":"+(layout==null?0:layout.generation)+"}");return IntPtr.Zero;
+      if(moved && r.left!=dragStartX) Emit("{\"kind\":\"drag-end\",\"x\":"+r.left+",\"generation\":"+(layout==null?0:layout.generation)+"}");
+      EmitClickAction(clicks.Release(clickCancelled));ArmClickTimer();return IntPtr.Zero;
     }
-    if(msg==0x215) { CancelDrag(false);return IntPtr.Zero; } // WM_CAPTURECHANGED
-    if(msg==0x1f) { CancelDrag(true);return IntPtr.Zero; } // WM_CANCELMODE
+    if(msg==0x215) { if(dragging){CancelClicks();CancelDrag(false);}return IntPtr.Zero; } // WM_CAPTURECHANGED
+    if(msg==0x1f) { CancelClicks();CancelDrag(true);return IntPtr.Zero; } // WM_CANCELMODE
     if(msg==ApplyLayout) { ApplyPendingLayout();return IntPtr.Zero; }
     if(msg==ApplyFrame) {
       Interlocked.Exchange(ref frameNotification,0);
@@ -183,9 +228,12 @@ internal static class TaskbarLyricsHost {
       if((GetQueueStatus(0x1c07)&0xffff0000)==0) DrawLatest();
       return IntPtr.Zero;
     }
-    if(msg==0x113) { if(!IsWindow(tray)) { closeReason="parent-destroyed";DestroyWindow(window); } else DrawLatest();return IntPtr.Zero; }
+    if(msg==0x113) {
+      if(wp.ToInt64()==2) { KillTimer(window,new UIntPtr(2));EmitClickAction(clicks.Expire(GetTickCount()));ArmClickTimer();return IntPtr.Zero; }
+      if(!IsWindow(tray)) { closeReason="parent-destroyed";DestroyWindow(window); } else DrawLatest();return IntPtr.Zero;
+    }
     if(msg==0x10) { DestroyWindow(window);return IntPtr.Zero; }
-    if(msg==0x2) { KillTimer(window,new UIntPtr(1));PostQuitMessage(0);return IntPtr.Zero; }
+    if(msg==0x2) { CancelClicks();KillTimer(window,new UIntPtr(1));PostQuitMessage(0);return IntPtr.Zero; }
     return DefWindowProc(window,msg,wp,lp);
   }
   [STAThread] static int Main(string[] args) {
