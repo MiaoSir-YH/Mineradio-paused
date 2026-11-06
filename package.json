@@ -15,6 +15,7 @@
     "build:win:internal-beta": "electron-builder --config electron-builder.internal-beta.json --win nsis --publish never"
   },
   "build": {
+    "beforePack": "scripts/build-taskbar-lyrics-host.js",
     "appId": "com.mineradio.desktop",
     "productName": "Mineradio",
     "directories": {

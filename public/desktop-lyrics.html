@@ -179,6 +179,17 @@
     body.unlocked .lyrics-close{display:flex}
     body.unlocked .stage.hint-visible .lock-hint{pointer-events:auto;-webkit-app-region:no-drag}
     .stage.hint-visible .lock-hint{opacity:.94;transform:translateX(-50%) translateY(0) scale(1)}
+    body.taskbar .lock-hint{display:none!important}
+    body.taskbar .wrap{inset:auto;left:50%;top:50%;transform-origin:center}
+    body.taskbar .stage{pointer-events:none;cursor:default}
+    body.taskbar .lyric-scroll{white-space:nowrap}
+    body.taskbar.taskbar-hover{cursor:grab}
+    body.taskbar.taskbar-dragging{cursor:grabbing}
+    /* Opaque glyphs avoid transparent background-clip compositing on Windows. */
+    body.taskbar .line{background:none;color:var(--lyric-primary);-webkit-text-fill-color:var(--lyric-primary);-webkit-text-stroke:.35px rgba(0,0,0,.75);text-shadow:0 1px 2px rgba(0,0,0,.95),0 0 calc(6px + var(--lyric-css-beat-glow)) var(--lyric-shadow-soft),0 0 calc(14px + var(--lyric-css-beat-glow)) var(--lyric-shadow-glow)}
+    body.taskbar.highlight #line::after{content:attr(data-text);position:absolute;top:.20em;left:.12em;width:calc(100% - .24em);white-space:nowrap;text-align:center;color:var(--lyric-highlight);-webkit-text-fill-color:var(--lyric-highlight);clip-path:inset(0 calc(100% - var(--lyric-progress)) 0 0);pointer-events:none}
+    #taskbarTranslation{display:none}
+    body.taskbar #taskbarTranslation:not(:empty){display:inline-block;white-space:pre}
     @keyframes lyr-in{
       0%{opacity:0;transform:translate3d(0,32px,-120px) rotateX(24deg) rotateY(-18deg) scale(.78);filter:blur(12px)}
       58%{opacity:1;filter:blur(0)}
@@ -191,7 +202,7 @@
   <canvas id="skyline"></canvas>
   <div class="wrap">
     <div id="stage" class="stage">
-      <div id="lyricViewport" class="lyric-viewport"><div id="lyricScroller" class="lyric-scroll"><div id="line" class="line" data-text="Mineradio">Mineradio</div></div></div>
+      <div id="lyricViewport" class="lyric-viewport"><div id="lyricScroller" class="lyric-scroll"><div id="line" class="line" data-text="Mineradio">Mineradio</div><span id="taskbarTranslation" class="line"></span></div></div>
       <div id="lockHint" class="lock-hint"><span class="lock-icon"></span><span id="lockText">&#20013;&#38190;&#35299;&#38145;</span><button id="closeLyricsBtn" class="lyrics-close" type="button" aria-label="Close desktop lyrics">&#20851;&#38381;&#26700;&#38754;&#27468;&#35789;</button></div>
     </div>
   </div>
@@ -201,8 +212,10 @@
     var canvas = document.getElementById('fx');
     var ctx = canvas.getContext('2d');
     var stage = document.getElementById('stage');
+    var wrap = stage.parentElement;
     var lyricViewport = document.getElementById('lyricViewport');
     var line = document.getElementById('line');
+    var taskbarTranslation = document.getElementById('taskbarTranslation');
     var lockHint = document.getElementById('lockHint');
     var lockText = document.getElementById('lockText');
     var closeLyricsBtn = document.getElementById('closeLyricsBtn');
@@ -217,6 +230,13 @@
     var dragging = false;
     var dragPointerId = null;
     var dragLast = { x:0, y:0 };
+    var taskbarDragGesture = null;
+    var taskbarDragFinishing = false;
+    var taskbarPointerLast = null;
+    var taskbarHotBoundsKey = '';
+    var taskbarHotLayoutId = null;
+    var taskbarHotCheckedAt = 0;
+    var taskbarHotSentAt = 0;
     var lastDrawAt = 0;
     var layoutKey = '';
     var hoverInside = false;
@@ -229,7 +249,7 @@
     var state = {
       enabled:false,text:'Mineradio',progress:0,progressSpan:4.8,progressReceivedAt:0,playing:false,
       playbackTime:0,playbackDuration:0,playbackRate:1,playbackReceivedAt:0,beatMapKey:'',
-      size:1,opacity:.92,clickThrough:true,lyricGlowParticles:false,cinema:true,highlightFollow:false,frameRate:60,
+      size:1,opacity:.92,clickThrough:true,taskbarMode:false,lyricGlowParticles:false,cinema:true,highlightFollow:false,frameRate:60,
       lyricGlow:true,lyricGlowBeat:true,lyricGlowStrength:.35,highBloom:0,beatGlow:0,beatPulse:0,bass:0,feather:.055,
       fontFamily:'Inter,"Noto Sans SC","PingFang SC","Microsoft YaHei",Arial,sans-serif',
       customFont:null,
@@ -259,7 +279,7 @@
       return Math.max(min, Math.min(max, n));
     }
     function rand(seed){ return Math.abs(Math.sin(seed * 9283.173) * 43758.5453) % 1; }
-    function isLocked(){ return state.clickThrough !== false; }
+    function isLocked(){ return state.taskbarMode === true || state.clickThrough !== false; }
     function setRootVar(name, value){ document.documentElement.style.setProperty(name, value); }
     var colorCtx = document.createElement('canvas').getContext('2d');
     function parseCssColor(color, fallback) {
@@ -401,7 +421,15 @@
     var skyline = { inst: null, key: '', contentKey: '', on: false };
     function applySkylineState(next) {
       var want = !!next.skyline && !!window.MineradioSkyline;
-      if (want && !skyline.inst) skyline.inst = MineradioSkyline.create(document.getElementById('skyline'), { opaque: false });
+      if (want && !skyline.inst) skyline.inst = MineradioSkyline.create(document.getElementById('skyline'), { opaque: false, taskbar: state.taskbarMode });
+      if (skyline.inst) {
+        if (typeof skyline.inst.setTaskbarMode === 'function') skyline.inst.setTaskbarMode(state.taskbarMode);
+        var nextPad = state.taskbarMode ? 0 : .25;
+        if (skyline.inst.pad !== nextPad) {
+          skyline.inst.pad = nextPad;
+          skyline.inst.relayout();
+        }
+      }
       if (want) {
         var key = String(next.skylineKey || '');
         if (Array.isArray(next.skylineLines)) {
@@ -597,7 +625,7 @@
     function measureLineWidth(fontSize) {
       ctx.save();
       ctx.font = state.fontWeight + ' ' + fontSize + 'px ' + state.fontFamily;
-      var text = line.textContent || 'Mineradio';
+      var text = (line.textContent || 'Mineradio') + (state.taskbarMode ? taskbarTranslation.textContent : '');
       var width = ctx.measureText(text).width;
       ctx.restore();
       width += Math.max(0, Array.from(text).length - 1) * fontSize * state.letterSpacing;
@@ -611,20 +639,35 @@
       return t * t * t * (t * (t * 6 - 15) + 10);
     }
     function fitLyricText(force) {
-      var safeWidth = Math.max(300, innerWidth - 8);
+      var taskbarScale = state.taskbarMode ? Math.max(.01, innerHeight / 120) : 1;
+      var layoutWidth = state.taskbarMode ? innerWidth / taskbarScale : innerWidth;
+      var layoutHeight = state.taskbarMode ? innerHeight / taskbarScale : innerHeight;
+      if (state.taskbarMode) {
+        wrap.style.width = layoutWidth + 'px';
+        wrap.style.height = layoutHeight + 'px';
+        wrap.style.transform = 'translate(-50%, -50%) scale(' + taskbarScale + ')';
+      } else {
+        wrap.style.removeProperty('width');
+        wrap.style.removeProperty('height');
+        wrap.style.removeProperty('transform');
+      }
+      var safeWidth = Math.max(300, layoutWidth - 8);
       var edgeWidth = Math.round(clamp(safeWidth * .085, 54, 116, 92));
-      var viewportWidth = Math.round(Math.max(280, Math.min(safeWidth - 12, innerWidth - Math.min(240, Math.max(88, innerWidth * .13)))));
+      var viewportWidth = Math.round(Math.max(280, Math.min(safeWidth - 12, layoutWidth - Math.min(240, Math.max(88, layoutWidth * .13)))));
       var clearWidth = Math.max(160, viewportWidth - edgeWidth * 2);
       var readableWidth = clearWidth;
-      var maxHeight = Math.max(64, innerHeight - 188);
+      var maxHeight = Math.max(64, layoutHeight - 188);
       var nextLayoutKey = [
+        state.taskbarMode,
         line.textContent || '',
+        state.taskbarMode ? taskbarTranslation.textContent : '',
         baseFontSize,
         state.fontFamily,
         state.fontWeight,
         state.letterSpacing,
         state.lineHeight,
-        innerWidth,
+        layoutWidth,
+        layoutHeight,
         innerHeight
       ].join('|');
       if (!force && nextLayoutKey === layoutKey) return;
@@ -636,7 +679,12 @@
       setRootVar('--lyric-edge-width', edgeWidth + 'px');
       var size = baseFontSize;
       fitScaleX = 1;
-      var minSize = Math.max(24, Math.min(32, baseFontSize * .55));
+      var minSize = Math.min(baseFontSize, Math.max(12, Math.min(32, baseFontSize * .55)));
+      if (state.taskbarMode) {
+        var taskbarMinSize = Math.min(12, Math.max(1, innerHeight * .75)) / taskbarScale;
+        size = Math.max(size, taskbarMinSize);
+        minSize = Math.max(minSize, taskbarMinSize);
+      }
       var maxScrollableWidth = readableWidth * 1.76;
       for (var i = 0; i < 24; i++) {
         var width = measureLineWidth(size);
@@ -670,7 +718,7 @@
           scrollState.holdUntil = performance.now() + lyricScrollInitialHoldMs();
         }
       }
-      renderedFontSize = Math.round(size);
+      renderedFontSize = Math.round(size * 100) / 100;
       setRootVar('--lyric-size', renderedFontSize + 'px');
       setRootVar('--lyric-vertical-feather', Math.round(clamp(renderedFontSize * .92, 38, 72, 46)) + 'px');
       setRootVar('--lyric-letter-spacing', (renderedFontSize * state.letterSpacing).toFixed(2) + 'px');
@@ -689,6 +737,13 @@
       }
       var limit = Math.max(0, scrollState.limit || scrollState.overflow / 2);
       scrollState.lastAt = nowMs;
+      if (state.taskbarMode) {
+        var taskbarProgress = clamp(progress == null ? state.progress : progress, 0, 1, 0);
+        var taskbarTravel = lyricScrollEase((taskbarProgress - .05) / .85);
+        scrollState.offset = limit * (1 - 2 * taskbarTravel);
+        setRootVar('--lyric-scroll-x', scrollState.offset.toFixed(2) + 'px');
+        return;
+      }
       if (limit > 0) {
         var p = clamp(progress == null ? state.progress : progress, 0, 1, 0);
         var rawP = currentRawProgress();
@@ -710,8 +765,10 @@
     }
     function replayLineAnimation() {
       line.classList.remove('in');
+      taskbarTranslation.classList.remove('in');
       void line.offsetWidth;
       line.classList.add('in');
+      taskbarTranslation.classList.add('in');
     }
     function syncLockClasses() {
       var locked = isLocked();
@@ -719,15 +776,92 @@
       document.body.classList.toggle('unlocked', !locked);
       if (lockText) lockText.textContent = locked ? '\u4e2d\u952e\u89e3\u9501' : '\u4e2d\u952e\u9501\u5b9a';
     }
-    function setPointerCapture(active) {
+    function setPointerCapture(active, force) {
+      // Taskbar hit testing is owned by the main process; only desktop lyrics
+      // request pointer capture from the renderer.
+      if (state.taskbarMode) return;
       active = !!active;
-      if (active === hoverCapture) return;
+      if (!force && active === hoverCapture) return;
       hoverCapture = active;
       if (window.desktopOverlay && window.desktopOverlay.setLyricsPointerCapture) {
         window.desktopOverlay.setLyricsPointerCapture(active).catch(function(){});
       }
     }
+    function intersectLyricBounds(a, b) {
+      if (!a || !b) return null;
+      var left = Math.max(a.left, b.left), top = Math.max(a.top, b.top);
+      var right = Math.min(a.right, b.right), bottom = Math.min(a.bottom, b.bottom);
+      return right > left && bottom > top ? { left:left, top:top, right:right, bottom:bottom } : null;
+    }
+    function unionLyricBounds(a, b) {
+      if (!a) return b;
+      if (!b) return a;
+      return { left:Math.min(a.left, b.left), top:Math.min(a.top, b.top), right:Math.max(a.right, b.right), bottom:Math.max(a.bottom, b.bottom) };
+    }
+    function taskbarLyricHotBounds() {
+      if (!state.enabled || !state.taskbarMode) return null;
+      var windowBounds = { left:0, top:0, right:innerWidth, bottom:innerHeight };
+      var visible = null;
+      if (skyline.on && skyline.inst && typeof skyline.inst.interactionBounds === 'function') {
+        var canvasBounds = skyline.inst.interactionBounds();
+        var skylineCanvas = skyline.inst.canvas;
+        var screenBounds = skylineCanvas.getBoundingClientRect();
+        if (canvasBounds && skylineCanvas.width && skylineCanvas.height && screenBounds.width && screenBounds.height) {
+          var sx = screenBounds.width / skylineCanvas.width, sy = screenBounds.height / skylineCanvas.height;
+          visible = intersectLyricBounds({
+            left:screenBounds.left + canvasBounds.left * sx,
+            top:screenBounds.top + canvasBounds.top * sy,
+            right:screenBounds.left + canvasBounds.right * sx,
+            bottom:screenBounds.top + canvasBounds.bottom * sy
+          }, windowBounds);
+        }
+      } else {
+        var viewport = intersectLyricBounds(lyricViewport.getBoundingClientRect(), windowBounds);
+        if (viewport) {
+          visible = intersectLyricBounds(line.getBoundingClientRect(), viewport);
+          if (taskbarTranslation.textContent) visible = unionLyricBounds(visible, intersectLyricBounds(taskbarTranslation.getBoundingClientRect(), viewport));
+        }
+      }
+      if (!visible) return null;
+      return intersectLyricBounds({ left:visible.left - 6, top:visible.top - 4, right:visible.right + 6, bottom:visible.bottom + 4 }, windowBounds);
+    }
+    function updateTaskbarHotLayoutId(value) {
+      if (value == null || value === '') return false;
+      var nextId = Number(value);
+      if (!Number.isSafeInteger(nextId) || nextId < 0 || (taskbarHotLayoutId != null && nextId < taskbarHotLayoutId)) return false;
+      if (taskbarHotLayoutId !== nextId) {
+        taskbarHotLayoutId = nextId;
+        taskbarHotBoundsKey = '';
+      }
+      if (state.taskbarMode) state.taskbarLayoutId = nextId;
+      return true;
+    }
+    function refreshTaskbarHotBounds(force) {
+      if (!state.taskbarMode) return;
+      var now = performance.now();
+      if (!force && now - taskbarHotCheckedAt < 100) return;
+      taskbarHotCheckedAt = now;
+      var bounds = taskbarLyricHotBounds();
+      var key = (bounds ? [bounds.left, bounds.top, bounds.right, bounds.bottom].map(function(v){ return Math.round(v); }).join('|') : 'none')
+        + '|' + innerWidth + 'x' + innerHeight + '|' + taskbarHotLayoutId;
+      if ((key !== taskbarHotBoundsKey || (bounds && now - taskbarHotSentAt >= 1000))
+          && window.desktopOverlay && window.desktopOverlay.setLyricsHotBounds) {
+        taskbarHotBoundsKey = key;
+        taskbarHotSentAt = now;
+        var packet = bounds ? Object.assign({ viewportWidth:innerWidth, viewportHeight:innerHeight }, bounds) : null;
+        window.desktopOverlay.setLyricsHotBounds(packet, taskbarHotLayoutId).catch(function(){});
+      }
+      if (!taskbarDragGesture && !taskbarDragFinishing && taskbarPointerLast) {
+        var point = { clientX:taskbarPointerLast.x - window.screenX, clientY:taskbarPointerLast.y - window.screenY };
+        var inside = !!bounds && pointInRect(point, bounds, 0, 0);
+        document.body.classList.toggle('taskbar-hover', inside);
+      } else if (!bounds && !taskbarDragGesture && !taskbarDragFinishing) {
+        document.body.classList.remove('taskbar-hover');
+      }
+    }
+    window.__mineradioTaskbarLyricHotBounds = taskbarLyricHotBounds;
     function sendHotBounds() {
+      if (state.taskbarMode) { refreshTaskbarHotBounds(true); return; }
       if (!window.desktopOverlay || !window.desktopOverlay.setLyricsHotBounds) return;
       var rect = lyricViewport.getBoundingClientRect();
       var padX = Math.max(26, Math.min(72, innerWidth * .038));
@@ -754,7 +888,6 @@
           document.fonts.add(loadedFace);
           if (state && state.fontFamily && state.fontFamily.indexOf(String(font.family)) !== -1) {
             fitLyricText(true);
-            drawFrame(performance.now(), true);
           }
         }).catch(function(e){
           console.warn('[DesktopLyrics] custom font load failed', e);
@@ -765,7 +898,37 @@
     }
     function applyState(next){
       next = next || {};
+      var previousTaskbarMode = state.taskbarMode === true;
+      var previousTaskbarDisplayId = String(state.taskbarDisplayId || '');
       state = Object.assign({}, state, next);
+      state.taskbarMode = state.taskbarMode === true;
+      var previousTaskbarHotLayoutId = taskbarHotLayoutId;
+      if (state.taskbarMode && Object.prototype.hasOwnProperty.call(next, 'taskbarLayoutId')) {
+        updateTaskbarHotLayoutId(next.taskbarLayoutId);
+        if (taskbarHotLayoutId != null) state.taskbarLayoutId = taskbarHotLayoutId;
+      }
+      var taskbarHotLayoutChanged = previousTaskbarHotLayoutId !== taskbarHotLayoutId;
+      var taskbarDisplayChanged = state.taskbarMode && previousTaskbarDisplayId !== String(state.taskbarDisplayId || '');
+      document.body.classList.toggle('taskbar', state.taskbarMode);
+      if (previousTaskbarMode !== state.taskbarMode) {
+        if (taskbarDragGesture) finishTaskbarDrag(null, true);
+        if (previousTaskbarMode && window.desktopOverlay && window.desktopOverlay.setLyricsHotBounds) {
+          window.desktopOverlay.setLyricsHotBounds(null, taskbarHotLayoutId).catch(function(){});
+        }
+        hoverCapture = false;
+        taskbarPointerLast = null;
+        taskbarHotBoundsKey = '';
+        document.body.classList.remove('taskbar-hover');
+        layoutKey = '';
+        scrollState.offset = 0;
+        hideInteractionHint();
+        setPointerCapture(false);
+      }
+      if (taskbarDisplayChanged) {
+        taskbarHotBoundsKey = '';
+        taskbarPointerLast = null;
+        document.body.classList.remove('taskbar-hover');
+      }
       state.colors = Object.assign({}, state.colors, next.colors || {});
       applyCustomFontPayload(next.customFont);
       applyDesktopPlayback(next.playback);
@@ -780,7 +943,7 @@
       if (motion.beatPulse != null) state.beatPulse = motion.beatPulse;
       if (motion.bass != null) state.bass = motion.bass;
       var text = String(state.text || 'Mineradio').replace(/\s+/g, ' ').trim() || 'Mineradio';
-      baseFontSize = Math.round(58 * clamp(state.size, .72, 1.55, 1));
+      baseFontSize = Math.max(12, 58 * clamp(state.size, .20, 1.55, 1));
       state.progress = clamp(state.progress, 0, 1, 0);
       state.progressSpan = clamp(state.progressSpan, .75, 18, 4.8);
       state.progressReceivedAt = performance.now();
@@ -820,6 +983,9 @@
       document.body.style.opacity = state.enabled ? String(clamp(state.opacity, .28, 1, .92)) : '0';
       syncLockClasses();
       if (!state.enabled) {
+        if (taskbarDragGesture) finishTaskbarDrag(null, true);
+        taskbarPointerLast = null;
+        if (state.taskbarMode) refreshTaskbarHotBounds(true);
         hideInteractionHint();
         setPointerCapture(false);
       }
@@ -836,7 +1002,17 @@
         layoutKey = '';
         replayLineAnimation();
       }
+      var translation = state.taskbarMode ? String(state.taskbarTranslation || '').replace(/\s+/g, ' ').trim() : '';
+      var translationDisplay = translation && translation !== text ? '  ·  ' + translation : '';
+      if (taskbarTranslation.textContent !== translationDisplay) {
+        taskbarTranslation.textContent = translationDisplay;
+        layoutKey = '';
+        taskbarTranslation.classList.remove('in');
+        void taskbarTranslation.offsetWidth;
+        taskbarTranslation.classList.add('in');
+      }
       fitLyricText(false);
+      if (taskbarDisplayChanged || taskbarHotLayoutChanged) refreshTaskbarHotBounds(true);
     }
     function currentDisplayProgress() {
       var target = clamp(state.progress, 0, 1, 0);
@@ -1058,10 +1234,11 @@
         var progress = currentDisplayProgress();
         setRootVar('--lyric-progress', (progress * 100).toFixed(2) + '%');
         var offlineMotion = tickDesktopBeatMap(currentDesktopPlaybackTime(nowMs), dt);
-        var motion = updateMotion(now, offlineMotion);
+        updateMotion(now, offlineMotion);
         applyStageMotion(now);
         updateLyricScroll(nowMs, progress);
         if (skyline.on) skyline.inst.render(currentDesktopPlaybackTime(nowMs) + (state.playbackLyricOffset || 0), state.playing ? dt : 0, MineradioSkyline.themeFromColors(state.colors), state.playbackRate);
+        if (state.taskbarMode) refreshTaskbarHotBounds(false);
       }
       scheduleNextDraw();
     }
@@ -1089,6 +1266,10 @@
     }
     function pointInStage(evt) {
       if (!state.enabled || !evt) return false;
+      if (state.taskbarMode) {
+        var hot = taskbarLyricHotBounds();
+        return !!hot && pointInRect(evt, hot, 0, 0);
+      }
       if (dragging) return true;
       if (!isLocked()) {
         var stageRect = stage.getBoundingClientRect();
@@ -1125,6 +1306,12 @@
       }, 1500);
     }
     function updateHover(evt) {
+      if (state.taskbarMode) {
+        if (evt && isFinite(evt.screenX) && isFinite(evt.screenY)) taskbarPointerLast = { x:Number(evt.screenX), y:Number(evt.screenY) };
+        var taskbarInside = !!state.enabled && pointInStage(evt);
+        document.body.classList.toggle('taskbar-hover', taskbarInside);
+        return taskbarInside;
+      }
       var inside = !!state.enabled && pointInStage(evt);
       hoverInside = inside;
       lastPointerEvent = evt || lastPointerEvent;
@@ -1153,6 +1340,107 @@
         window.desktopOverlay.setLyricsLockState(!!locked).catch(function(){});
       }
     }
+    function beginTaskbarDrag(evt) {
+      var api = window.desktopOverlay;
+      if (taskbarDragGesture || taskbarDragFinishing || !api || !api.setLyricsDrag || !api.moveLyricsBy) return;
+      var g = {
+        pointerId:evt.pointerId, pressX:Number(evt.screenX), desiredX:Number(evt.screenX),
+        startWindowX:null, lastWindowX:null, sessionId:null, crossed:false, moveQueued:false,
+        ending:false, cancelled:false, failed:false, finalPoint:null, chain:null
+      };
+      if (!isFinite(g.pressX)) return;
+      taskbarDragGesture = g;
+      document.body.classList.add('taskbar-dragging');
+      try {
+        g.chain = Promise.resolve(api.setLyricsDrag(true)).then(function(result){
+          if (!result || result.ok !== true || result.sessionId == null || !result.bounds || !isFinite(Number(result.bounds.x))) throw new Error('TASKBAR_DRAG_START_FAILED');
+          g.sessionId = result.sessionId;
+          g.startWindowX = Number(result.bounds.x);
+          g.lastWindowX = g.startWindowX;
+        }).catch(function(error){
+          g.failed = true;
+          console.warn('[DesktopLyrics] taskbar drag start failed:', error);
+          if (taskbarDragGesture === g && !g.ending) finishTaskbarDrag(null, true);
+        });
+      } catch (error) {
+        g.failed = true;
+        g.chain = Promise.resolve();
+        finishTaskbarDrag(null, true);
+        return;
+      }
+      try { if (stage.setPointerCapture) stage.setPointerCapture(evt.pointerId); } catch (e) {}
+      evt.preventDefault();
+    }
+    function queueTaskbarDragMove(g) {
+      if (g.moveQueued || g.failed || g.cancelled) return;
+      g.moveQueued = true;
+      g.chain = g.chain.then(async function(){
+        try {
+          while (g.crossed && !g.cancelled && !g.failed) {
+            var wanted = g.desiredX;
+            var targetX = g.startWindowX + wanted - g.pressX;
+            var dx = targetX - g.lastWindowX;
+            if (Math.abs(dx) < .5) break;
+            var previousX = g.lastWindowX;
+            var result = await window.desktopOverlay.moveLyricsBy(dx, 0, g.sessionId);
+            if (!result || result.ok !== true || !result.bounds || !isFinite(Number(result.bounds.x))) throw new Error('TASKBAR_DRAG_MOVE_FAILED');
+            g.lastWindowX = Number(result.bounds.x);
+            if (g.lastWindowX === previousX && wanted === g.desiredX) break;
+          }
+        } finally {
+          g.moveQueued = false;
+        }
+      }).catch(function(error){
+        g.failed = true;
+        console.warn('[DesktopLyrics] taskbar drag move failed:', error);
+        if (taskbarDragGesture === g && !g.ending) finishTaskbarDrag(null, true);
+      });
+    }
+    function updateTaskbarDrag(evt) {
+      var g = taskbarDragGesture;
+      if (!g || g.ending || !evt || (g.pointerId != null && evt.pointerId != null && evt.pointerId !== g.pointerId)) return;
+      var x = Number(evt.screenX);
+      if (!isFinite(x)) return;
+      g.desiredX = x;
+      if (!g.crossed && Math.abs(x - g.pressX) > 4) g.crossed = true;
+      if (g.crossed) queueTaskbarDragMove(g);
+    }
+    function finishTaskbarDrag(evt, cancel) {
+      var g = taskbarDragGesture;
+      if (!g || g.ending || (evt && g.pointerId != null && evt.pointerId != null && evt.pointerId !== g.pointerId)) return;
+      if (!cancel && evt) updateTaskbarDrag(evt);
+      g.cancelled = !!cancel;
+      g.ending = true;
+      if (evt && isFinite(evt.screenX) && isFinite(evt.screenY)) g.finalPoint = { x:Number(evt.screenX), y:Number(evt.screenY) };
+      taskbarDragFinishing = true;
+      document.body.classList.remove('taskbar-dragging');
+      try {
+        if (g.pointerId != null && stage.releasePointerCapture && stage.hasPointerCapture && stage.hasPointerCapture(g.pointerId)) stage.releasePointerCapture(g.pointerId);
+      } catch (e) {}
+      g.chain = g.chain.then(function(){
+        var cancelled = g.cancelled || g.failed || !g.crossed || g.startWindowX === g.lastWindowX;
+        return window.desktopOverlay.setLyricsDrag(false, cancelled, g.sessionId);
+      }).then(function(result){
+        if (!result || result.ok !== true) g.failed = true;
+        return result;
+      }).catch(function(error){
+        g.failed = true;
+        console.warn('[DesktopLyrics] taskbar drag finish failed:', error);
+        return null;
+      }).then(function(result){
+        if (taskbarDragGesture === g) taskbarDragGesture = null;
+        taskbarDragFinishing = false;
+        if (!state.taskbarMode) return;
+        var inside = false;
+        if (!g.cancelled && !g.failed && state.enabled && g.finalPoint && result && result.bounds) {
+          taskbarPointerLast = g.finalPoint;
+          var hot = taskbarLyricHotBounds();
+          var point = { clientX:g.finalPoint.x - Number(result.bounds.x), clientY:g.finalPoint.y - Number(result.bounds.y) };
+          inside = !!hot && pointInRect(point, hot, 0, 0);
+        } else taskbarPointerLast = null;
+        document.body.classList.toggle('taskbar-hover', inside);
+      });
+    }
     function moveDrag(evt) {
       if (dragging && !isLocked() && window.desktopOverlay && window.desktopOverlay.moveLyricsBy) {
         var dx = evt.screenX - dragLast.x;
@@ -1175,6 +1463,11 @@
       setPointerCapture(false);
     }
     window.addEventListener('pointermove', function(evt){
+      if (taskbarDragGesture && !taskbarDragGesture.ending) {
+        if (evt.buttons != null && (evt.buttons & 1) === 0) finishTaskbarDrag(evt, true);
+        else updateTaskbarDrag(evt);
+        return;
+      }
       if (dragging && evt.buttons != null && (evt.buttons & 1) === 0) {
         endDrag(evt);
         updateHover(evt);
@@ -1184,9 +1477,16 @@
       moveDrag(evt);
     });
     window.addEventListener('mousemove', function(evt){
-      if (!dragging) updateHover(evt);
+      if (!dragging && !taskbarDragGesture) updateHover(evt);
     });
     window.addEventListener('pointerleave', function(){
+      if (state.taskbarMode) {
+        if (!taskbarDragGesture && !taskbarDragFinishing) {
+          taskbarPointerLast = null;
+          document.body.classList.remove('taskbar-hover');
+        }
+        return;
+      }
       if (dragging) {
         setPointerCapture(true);
         return;
@@ -1194,11 +1494,16 @@
       hideInteractionHint();
     });
     window.addEventListener('mouseleave', function(){
+      if (state.taskbarMode) return;
       if (!dragging) hideInteractionHint();
     });
     window.addEventListener('pointerdown', function(evt){
       if (!pointInStage(evt)) return;
       if (closeLyricsBtn && closeLyricsBtn.contains(evt.target)) return;
+      if (state.taskbarMode) {
+        if (evt.button === 0) beginTaskbarDrag(evt);
+        return;
+      }
       if (evt.button === 1) {
         evt.preventDefault();
         hideInteractionHint();
@@ -1221,13 +1526,25 @@
         evt.preventDefault();
       }
     });
-    window.addEventListener('pointerup', endDrag);
-    window.addEventListener('pointercancel', endDrag);
+    window.addEventListener('pointerup', function(evt){ if (taskbarDragGesture) finishTaskbarDrag(evt, false); else endDrag(evt); });
+    window.addEventListener('pointercancel', function(evt){ if (taskbarDragGesture) finishTaskbarDrag(evt, true); else endDrag(evt); });
+    document.addEventListener('visibilitychange', function(){
+      if (!state.taskbarMode) return;
+      taskbarHotBoundsKey = '';
+      taskbarPointerLast = null;
+      document.body.classList.remove('taskbar-hover');
+      if (document.hidden) {
+        if (taskbarDragGesture) finishTaskbarDrag(null, true);
+      } else {
+        refreshTaskbarHotBounds(true);
+      }
+    });
     window.addEventListener('blur', function(){
+      if (taskbarDragGesture) finishTaskbarDrag(null, true);
       endDrag({ pointerId:dragPointerId });
       hideInteractionHint();
     });
-    stage.addEventListener('lostpointercapture', endDrag);
+    stage.addEventListener('lostpointercapture', function(evt){ if (taskbarDragGesture) finishTaskbarDrag(evt, true); else endDrag(evt); });
     window.addEventListener('auxclick', function(evt){
       if (evt.button === 1 && pointInStage(evt)) evt.preventDefault();
     });
@@ -1259,6 +1576,17 @@
     })();
     if (window.desktopOverlay && window.desktopOverlay.onLyricsState) {
       window.desktopOverlay.onLyricsState(applyState);
+    }
+    if (window.desktopOverlay && window.desktopOverlay.onLyricsHotBoundsRequested) {
+      window.desktopOverlay.onLyricsHotBoundsRequested(function(request){
+        if (!state.taskbarMode) return;
+        if (request && Object.prototype.hasOwnProperty.call(request, 'layoutId')
+            && !updateTaskbarHotLayoutId(request.layoutId)) return;
+        // Main clears its cached hit region when the window is hidden or moved
+        // to another screen, even if the renderer geometry is unchanged.
+        taskbarHotBoundsKey = '';
+        refreshTaskbarHotBounds(true);
+      });
     }
     requestAnimationFrame(draw);
   </script>

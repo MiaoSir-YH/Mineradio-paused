@@ -105,6 +105,27 @@ contextBridge.exposeInMainWorld('desktopWindow', {
   },
   setDesktopLyricsEnabled: (enabled, payload) => ipcRenderer.invoke('mineradio-desktop-lyrics-set-enabled', !!enabled, payload || {}),
   updateDesktopLyrics: (payload) => ipcRenderer.invoke('mineradio-desktop-lyrics-update', payload || {}),
+  getDesktopLyricsDisplays: () => ipcRenderer.invoke('mineradio-desktop-lyrics-get-displays'),
+  onDesktopLyricsTaskbarPositionChanged: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    let active = true;
+    const listener = (_event, payload) => callback(payload || {});
+    ipcRenderer.on('mineradio-desktop-lyrics-taskbar-position-changed', listener);
+    ipcRenderer.invoke('mineradio-desktop-lyrics-get-pending-taskbar-position').then((result) => {
+      if (active && result && result.ok && result.pending) callback(result.pending);
+    }).catch(() => {});
+    return () => {
+      active = false;
+      ipcRenderer.removeListener('mineradio-desktop-lyrics-taskbar-position-changed', listener);
+    };
+  },
+  ackDesktopLyricsTaskbarPositionChange: (revision) => ipcRenderer.invoke('mineradio-desktop-lyrics-ack-taskbar-position', revision),
+  onDesktopLyricsDisplaysChanged: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload || {});
+    ipcRenderer.on('mineradio-desktop-lyrics-displays-changed', listener);
+    return () => ipcRenderer.removeListener('mineradio-desktop-lyrics-displays-changed', listener);
+  },
   onDesktopLyricsLockState: (callback) => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, payload) => callback(payload || {});

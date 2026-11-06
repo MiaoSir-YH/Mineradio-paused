@@ -66,6 +66,10 @@ function layoutNumber(value, fallback, min, max) {
   if (!isFinite(n)) n = min;
   return clampRange(n, min, max);
 }
+function normalizeDesktopLyricsTaskbarX(value) {
+  if (value == null || (typeof value === 'string' && !value.trim())) value = fxDefaults.desktopLyricsTaskbarX;
+  return layoutNumber(value, fxDefaults.desktopLyricsTaskbarX, 0, 1);
+}
 function layoutInteger(value, fallback, min, max) {
   return Math.round(layoutNumber(value, fallback, min, max));
 }
@@ -322,7 +326,10 @@ function readSavedLyricLayout() {
       backgroundMediaCropY: savedBgCropY,
       backgroundMediaZoom: savedBgZoom,
       desktopLyrics: raw.desktopLyrics === true,
-      desktopLyricsSize: clampRange(Number(raw.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.72, 1.55),
+      desktopLyricsTaskbar: raw.desktopLyricsTaskbar === true,
+      desktopLyricsTaskbarDisplayId: raw.desktopLyricsTaskbarDisplayId == null ? '' : String(raw.desktopLyricsTaskbarDisplayId).slice(0, 128),
+      desktopLyricsTaskbarX: normalizeDesktopLyricsTaskbarX(raw.desktopLyricsTaskbarX),
+      desktopLyricsSize: clampRange(Number(raw.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.20, 1.55),
       desktopLyricsOpacity: clampRange(raw.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(raw.desktopLyricsOpacity), 0.28, 1),
       desktopLyricsY: clampRange(raw.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(raw.desktopLyricsY), 0.08, 0.92),
       desktopLyricsClickThrough: desktopLyricsSchemaReady ? raw.desktopLyricsClickThrough === true : fxDefaults.desktopLyricsClickThrough,
@@ -558,6 +565,7 @@ function currentFxAutosaveTouchedKeys(reason, payload) {
     shelfPresence: ['shelfPresence', 'shelfPinnedOpen'],
     shelfAccentColor: ['shelfAccentColor'],
     desktopLyrics: ['desktopLyrics'],
+    desktopLyricsTaskbar: ['desktopLyricsTaskbar', 'desktopLyrics'],
     desktopLyricsClickThrough: ['desktopLyricsClickThrough'],
     desktopLyricsFps: ['desktopLyricsFps'],
     performanceBackground: ['performanceBackground', 'liveBackgroundKeep'],
@@ -814,7 +822,10 @@ function saveLyricLayout(opts) {
       backgroundMediaCropY: clampRange(fx.backgroundMediaCropY == null ? fxDefaults.backgroundMediaCropY : Number(fx.backgroundMediaCropY), 0, 100),
       backgroundMediaZoom: clampRange(fx.backgroundMediaZoom == null ? fxDefaults.backgroundMediaZoom : Number(fx.backgroundMediaZoom), 1, 2.8),
       desktopLyrics: !!fx.desktopLyrics,
-      desktopLyricsSize: clampRange(Number(fx.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.72, 1.55),
+      desktopLyricsTaskbar: fx.desktopLyricsTaskbar === true,
+      desktopLyricsTaskbarDisplayId: fx.desktopLyricsTaskbarDisplayId == null ? '' : String(fx.desktopLyricsTaskbarDisplayId).slice(0, 128),
+      desktopLyricsTaskbarX: normalizeDesktopLyricsTaskbarX(fx.desktopLyricsTaskbarX),
+      desktopLyricsSize: clampRange(Number(fx.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.20, 1.55),
       desktopLyricsOpacity: clampRange(fx.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(fx.desktopLyricsOpacity), 0.28, 1),
       desktopLyricsY: clampRange(fx.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(fx.desktopLyricsY), 0.08, 0.92),
       desktopLyricsClickThrough: fx.desktopLyricsClickThrough === true,

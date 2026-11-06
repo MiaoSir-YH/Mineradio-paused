@@ -51,7 +51,7 @@ function setRange(id, value) {
 }
 function updateDevelopmentFxControls() {
   [
-    ['desktopLyrics', 't-desktopLyrics', '全屏幕置顶歌词'],
+    ['desktopLyrics', 't-desktopLyrics', '歌词显示总开关，可显示在桌面或任务栏'],
     ['desktopLyricsClickThrough', 't-desktopLyricsClickThrough', '锁定后防误触；鼠标移到桌面歌词上按中键可锁定/解锁'],
     ['desktopLyricsCinema', 't-desktopLyricsCinema', '桌面歌词绑定鼓点电影震动，基础漂浮始终保留'],
     ['desktopLyricsHighlight', 't-desktopLyricsHighlight', '桌面歌词按播放进度高亮'],
@@ -94,6 +94,100 @@ function updateDevelopmentFxControls() {
   document.querySelectorAll('#wallpaper-fps-seg [data-wallpaper-fps]').forEach(function (btn) {
     btn.disabled = wallpaperFpsLocked;
   });
+  updateDesktopLyricsDisplayControls();
+}
+var desktopLyricsDisplaysState = { supported: null, displays: [], loaded: false, error: false };
+var desktopLyricsDisplaysUnsubscribe = null;
+function setDesktopLyricsDisplayOptionLabel(option, label) {
+  var text = document.createElement('span');
+  text.className = 'desktop-lyrics-display-name';
+  text.textContent = label;
+  option.appendChild(text);
+  option.title = label;
+}
+function updateDesktopLyricsDisplayControls() {
+  var toggle = document.getElementById('t-desktopLyricsTaskbar');
+  var unavailable = desktopLyricsDisplaysState.supported === false;
+  if (toggle) {
+    var locked = unavailable && fx.desktopLyricsTaskbar !== true;
+    toggle.classList.toggle('dev-locked', locked);
+    if (locked) toggle.setAttribute('aria-disabled', 'true');
+    else toggle.removeAttribute('aria-disabled');
+    toggle.title = unavailable ? '当前系统不支持任务栏歌词' : '开启后将歌词显示在 Windows 任务栏区域；关闭后恢复桌面歌词';
+  }
+  var select = document.getElementById('desktop-lyrics-display');
+  if (!select) return;
+  var selected = fx.desktopLyricsTaskbarDisplayId == null ? '' : String(fx.desktopLyricsTaskbarDisplayId);
+  var displays = desktopLyricsDisplaysState.displays || [];
+  select.textContent = '';
+  var auto = document.createElement('option');
+  auto.value = '';
+  setDesktopLyricsDisplayOptionLabel(auto, '主显示屏（自动）');
+  select.appendChild(auto);
+  var found = !selected;
+  var selectedLabel = auto.textContent;
+  displays.forEach(function (display, index) {
+    var id = String(display.id == null ? '' : display.id);
+    if (!id) return;
+    var option = document.createElement('option');
+    option.value = id;
+    var label = '屏幕 ' + (index + 1) + (display.isPrimary ? ' · 主屏' : ' · 副屏')
+      + (display.label ? ' · ' + String(display.label) : '')
+      + (display.taskbarAvailable === false ? '（无横向任务栏）' : '');
+    setDesktopLyricsDisplayOptionLabel(option, label);
+    option.disabled = display.taskbarAvailable === false && id !== selected;
+    select.appendChild(option);
+    if (id === selected) { found = true; selectedLabel = option.textContent; }
+  });
+  if (!found) {
+    var missing = document.createElement('option');
+    missing.value = selected;
+    setDesktopLyricsDisplayOptionLabel(missing, '已选屏幕暂不可用（' + selected + '）');
+    select.appendChild(missing);
+    selectedLabel = missing.textContent;
+  }
+  select.value = selected;
+  select.disabled = unavailable;
+  select.title = selectedLabel + (desktopLyricsDisplaysState.error ? '（屏幕列表暂时不可用，已保留原设置）' : '');
+}
+function applyDesktopLyricsDisplays(result) {
+  if (!result || result.ok !== true) {
+    desktopLyricsDisplaysState.error = true;
+    if (result && result.supported === false) desktopLyricsDisplaysState.supported = false;
+  } else {
+    desktopLyricsDisplaysState = {
+      supported: result.supported !== false,
+      displays: Array.isArray(result.displays) ? result.displays : [],
+      loaded: true,
+      error: false
+    };
+  }
+  updateDesktopLyricsDisplayControls();
+}
+function initDesktopLyricsDisplays() {
+  var select = document.getElementById('desktop-lyrics-display');
+  if (select && !select._desktopLyricsBound) {
+    select._desktopLyricsBound = true;
+    select.addEventListener('change', function () {
+      fx.desktopLyricsTaskbarDisplayId = String(select.value || '');
+      var option = select.options[select.selectedIndex];
+      if (option) select.title = option.textContent + (desktopLyricsDisplaysState.error ? '（屏幕列表暂时不可用，已保留原设置）' : '');
+      saveLyricLayout({ user: true, reason: 'desktopLyricsTaskbarDisplayId' });
+      pushDesktopLyricsState(true);
+    });
+  }
+  var api = typeof getDesktopWindowApi === 'function' ? getDesktopWindowApi() : null;
+  if (!api || typeof api.getDesktopLyricsDisplays !== 'function') {
+    desktopLyricsDisplaysState.supported = false;
+    updateDesktopLyricsDisplayControls();
+    return;
+  }
+  if (typeof api.onDesktopLyricsDisplaysChanged === 'function' && !desktopLyricsDisplaysUnsubscribe) {
+    try { desktopLyricsDisplaysUnsubscribe = api.onDesktopLyricsDisplaysChanged(applyDesktopLyricsDisplays); }
+    catch (_) { desktopLyricsDisplaysUnsubscribe = null; }
+  }
+  Promise.resolve().then(function () { return api.getDesktopLyricsDisplays(); })
+    .then(applyDesktopLyricsDisplays).catch(function () { applyDesktopLyricsDisplays(null); });
 }
 function updateDesktopLyricsFpsControls() {
   var fps = normalizeDesktopLyricsFps(fx.desktopLyricsFps);
@@ -368,6 +462,8 @@ function updateFxInputs() {
   document.getElementById('t-edge').classList.toggle('on', fx.edge);
   var desktopLyricsToggle = document.getElementById('t-desktopLyrics');
   if (desktopLyricsToggle) desktopLyricsToggle.classList.toggle('on', fx.desktopLyrics);
+  var desktopLyricsTaskbarToggle = document.getElementById('t-desktopLyricsTaskbar');
+  if (desktopLyricsTaskbarToggle) desktopLyricsTaskbarToggle.classList.toggle('on', fx.desktopLyricsTaskbar === true);
   var desktopLyricsClickToggle = document.getElementById('t-desktopLyricsClickThrough');
   if (desktopLyricsClickToggle) desktopLyricsClickToggle.classList.toggle('on', fx.desktopLyricsClickThrough !== false);
   var desktopLyricsCinemaToggle = document.getElementById('t-desktopLyricsCinema');
@@ -445,6 +541,9 @@ function isStageLyricRealtimeFxKey(key) {
 }
 function isDesktopLyricRealtimeFxKey(key) {
   return isStageLyricRealtimeFxKey(key)
+    || key === 'desktopLyricsSize'
+    || key === 'desktopLyricsOpacity'
+    || key === 'desktopLyricsY'
     || key === 'lyricScale'
     || key === 'lyricGlowStrength';
 }
@@ -714,6 +813,7 @@ function ensureLyricPrimaryControls() {
   }
   [
     't-desktopLyrics',
+    't-desktopLyricsTaskbar',
     't-desktopLyricsClickThrough',
     't-desktopLyricsCinema',
     't-desktopLyricsHighlight',

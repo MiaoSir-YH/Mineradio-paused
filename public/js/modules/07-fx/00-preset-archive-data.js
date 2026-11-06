@@ -275,7 +275,10 @@ var USER_FX_SHARE_KEYS = [
   'coverBackdropAdapt',
   'gesturePlayerActions',
   'gestureHandOverlay',
-  'gestureSensitivity'
+  'gestureSensitivity',
+  'desktopLyricsTaskbar',
+  'desktopLyricsTaskbarDisplayId',
+  'desktopLyricsTaskbarX'
 ];
 function defaultUserFxArchiveName(index) {
   return '存档 ' + (index + 1);
@@ -417,7 +420,10 @@ function normalizeFxArchiveSnapshot(raw) {
     backgroundStarRiver: raw.backgroundStarRiver !== false,
     lyricPauseHold: raw.lyricPauseHold !== false,
     desktopLyrics: !!raw.desktopLyrics,
-    desktopLyricsSize: archiveNumber(raw, 'desktopLyricsSize', fxDefaults.desktopLyricsSize, 0.72, 1.55),
+    desktopLyricsTaskbar: raw.desktopLyricsTaskbar === true,
+    desktopLyricsTaskbarDisplayId: raw.desktopLyricsTaskbarDisplayId == null ? '' : String(raw.desktopLyricsTaskbarDisplayId).slice(0, 128),
+    desktopLyricsTaskbarX: normalizeDesktopLyricsTaskbarX(raw.desktopLyricsTaskbarX),
+    desktopLyricsSize: archiveNumber(raw, 'desktopLyricsSize', fxDefaults.desktopLyricsSize, 0.20, 1.55),
     desktopLyricsOpacity: archiveNumber(raw, 'desktopLyricsOpacity', fxDefaults.desktopLyricsOpacity, 0.28, 1),
     desktopLyricsY: archiveNumber(raw, 'desktopLyricsY', fxDefaults.desktopLyricsY, 0.08, 0.92),
     desktopLyricsClickThrough: raw.desktopLyricsClickThrough === true,

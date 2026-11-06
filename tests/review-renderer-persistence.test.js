@@ -157,11 +157,11 @@ test('a successful Qishui poll leaves a later provider’s login dialog open', a
 });
 
 test('desktop Skyline applies middle lyric and word-timing changes with identical endpoints', () => {
-  const ctx = vm.createContext({ window: {}, document: { getElementById() {}, body: { classList: { toggle() {} } } } });
+  const ctx = vm.createContext({ state: { taskbarMode: false }, window: {}, document: { getElementById() {}, body: { classList: { toggle() {} } } } });
   vm.runInContext(readSource('public/js/skyline-lyrics.js'), ctx);
   const api = ctx.MineradioSkyline = ctx.window.MineradioSkyline;
-  let replacements = 0;
-  api.create = () => ({ lines: [], setLines(lines) { replacements++; this.lines = lines; } });
+  let replacements = 0, layouts = 0;
+  api.create = () => ({ lines: [], pad: 0.25, relayout() { layouts++; }, setLines(lines) { replacements++; this.lines = lines; } });
   vm.runInContext(sourceRange(readSource('public/desktop-lyrics.html'), 'var skyline =', 'function applyDesktopPlayback'), ctx);
   const lines = [{ t: 0, text: 'First' }, { t: 1, text: 'Middle', words: [{ text: 'Middle', t: 1, d: 0.5 }] }, { t: 2, text: 'Last' }];
   const edited = structuredClone(lines);
@@ -173,6 +173,19 @@ test('desktop Skyline applies middle lyric and word-timing changes with identica
   for (const data of [lines, edited, middle, structuredClone(middle)]) ctx.applySkylineState({ skyline: true, skylineKey: 'old-key', skylineLines: data });
   assert.equal(replacements, 3);
   assert.equal(ctx.skyline.inst.lines[1].text, 'Changed middle');
+  ctx.state.taskbarMode = true;
+  const taskbarEdit = structuredClone(middle);
+  taskbarEdit[1].words[0].d = 1.2;
+  ctx.applySkylineState({ skyline: true, skylineKey: 'old-key', skylineLines: taskbarEdit });
+  assert.equal(ctx.skyline.on, true, 'taskbar mode keeps Skyline enabled');
+  assert.equal(ctx.skyline.inst.pad, 0);
+  assert.equal(replacements, 4, 'taskbar receives updated word timing');
+  assert.equal(ctx.skyline.inst.lines[1].words[0].d, 1.2);
+  ctx.state.taskbarMode = false;
+  ctx.applySkylineState({ skyline: true, skylineKey: 'old-key', skylineLines: taskbarEdit });
+  assert.equal(ctx.skyline.on, true, 'returning to desktop restores Skyline');
+  assert.equal(ctx.skyline.inst.pad, 0.25);
+  assert.equal(layouts, 2);
 });
 
 test('Skyline shares uploads between its canvas and word textures and hides on pause when requested', () => {

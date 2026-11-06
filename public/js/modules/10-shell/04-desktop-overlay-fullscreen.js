@@ -956,6 +956,23 @@ function currentDesktopLyricSnapshot() {
   }
   return { text: normalizeDesktopLyricText(currentDesktopSongMeta().title || 'Mineradio'), progress: 0, progressSpan: 4.8 };
 }
+function currentTaskbarLyricTranslation() {
+  if (fx.desktopLyricsTaskbar !== true || typeof normalizeLyricTranslationMode !== 'function'
+      || normalizeLyricTranslationMode(fx.lyricTranslationMode) === 'off' || !audio) return '';
+  var lines = Array.isArray(lyricsLines) ? lyricsLines : [];
+  var rawT = isFinite(audio.currentTime) ? Number(audio.currentTime) : 0;
+  var t = typeof getAdjustedLyricPlaybackTime === 'function' ? getAdjustedLyricPlaybackTime(rawT) : rawT;
+  var index = -1;
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].t <= t + 0.05) index = i;
+    else break;
+  }
+  if (index < 0) return '';
+  var original = normalizeDesktopLyricText(lines[index].text);
+  var translation = typeof lyricLineTranslationTextAt === 'function' ? lyricLineTranslationTextAt(index) : lines[index].translation;
+  translation = normalizeDesktopLyricText(translation);
+  return translation && translation !== original ? translation : '';
+}
 function desktopOverlayColorValue(value, fallback) {
   var raw = String(value || '').trim();
   fallback = String(fallback || '#d6f8ff').trim();
@@ -1061,13 +1078,17 @@ function desktopLyricsPayload(forceBeatMap, includeCustomFontData) {
   var beatPayload = desktopLyricsBeatMapPayload(!!forceBeatMap);
   var payload = {
     enabled: !!fx.desktopLyrics && !isDevelopmentLockedFx('desktopLyrics'),
+    taskbarMode: fx.desktopLyricsTaskbar === true,
+    taskbarDisplayId: fx.desktopLyricsTaskbarDisplayId == null ? '' : String(fx.desktopLyricsTaskbarDisplayId).slice(0, 128),
+    taskbarPosition: normalizeDesktopLyricsTaskbarX(fx.desktopLyricsTaskbarX),
+    taskbarTranslation: currentTaskbarLyricTranslation(),
     text: lyric.text,
     progress: lyric.progress,
     progressSpan: lyric.progressSpan,
     title: meta.title,
     artist: meta.artist,
     playing: !!playing,
-    size: clampRange(Number(fx.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.72, 1.55),
+    size: clampRange(Number(fx.desktopLyricsSize) || fxDefaults.desktopLyricsSize, 0.20, 1.55),
     opacity: clampRange(fx.desktopLyricsOpacity == null ? fxDefaults.desktopLyricsOpacity : Number(fx.desktopLyricsOpacity), 0.28, 1),
     y: clampRange(fx.desktopLyricsY == null ? fxDefaults.desktopLyricsY : Number(fx.desktopLyricsY), 0.08, 0.92),
     clickThrough: isDevelopmentLockedFx('desktopLyricsClickThrough') ? true : fx.desktopLyricsClickThrough !== false,
@@ -1397,10 +1418,10 @@ function pushDesktopLyricsState(force) {
   var colors = payload.colors || {};
   var motion = payload.motion || {};
   var payloadCustomFontId = payload.customFont ? payload.customFont.id : '';
-  var key = payload.enabled + '|' + payload.text + '|' + Math.round(payload.progress * 1000) + '|' + Math.round((payload.progressSpan || 0) * 100) + '|' + payload.playing + '|' + payload.size + '|' + payload.opacity + '|' + payload.y + '|' + payload.clickThrough + '|' + payload.cinema + '|' + payload.highlightFollow + '|' + payload.frameRate + '|' + payload.fontFamily + '|' + payloadCustomFontId + '|' + payload.fontWeight + '|' + payload.letterSpacing + '|' + payload.lineHeight + '|' + payload.lyricScale + '|' + payload.feather + '|' + payload.beatMapKey + '|' + colors.primary + '|' + colors.secondary + '|' + colors.highlight + '|' + colors.glow + '|' + motion.lyricGlow + '|' + motion.lyricGlowBeat + '|' + Math.round((motion.lyricGlowStrength || 0) * 100) + '|' + Math.round((motion.highBloom || 0) * 100) + '|' + Math.round((motion.beatGlow || 0) * 100) + '|' + Math.round((motion.beatPulse || 0) * 100) + '|' + Math.round((motion.bass || 0) * 100) + '|' + payload.skylineKey;
+  var key = payload.enabled + '|' + payload.taskbarMode + '|' + payload.taskbarDisplayId + '|' + payload.taskbarPosition + '|' + payload.taskbarTranslation + '|' + payload.text + '|' + Math.round(payload.progress * 1000) + '|' + Math.round((payload.progressSpan || 0) * 100) + '|' + payload.playing + '|' + payload.size + '|' + payload.opacity + '|' + payload.y + '|' + payload.clickThrough + '|' + payload.cinema + '|' + payload.highlightFollow + '|' + payload.frameRate + '|' + payload.fontFamily + '|' + payloadCustomFontId + '|' + payload.fontWeight + '|' + payload.letterSpacing + '|' + payload.lineHeight + '|' + payload.lyricScale + '|' + payload.feather + '|' + payload.beatMapKey + '|' + colors.primary + '|' + colors.secondary + '|' + colors.highlight + '|' + colors.glow + '|' + motion.lyricGlow + '|' + motion.lyricGlowBeat + '|' + Math.round((motion.lyricGlowStrength || 0) * 100) + '|' + Math.round((motion.highBloom || 0) * 100) + '|' + Math.round((motion.beatGlow || 0) * 100) + '|' + Math.round((motion.beatPulse || 0) * 100) + '|' + Math.round((motion.bass || 0) * 100) + '|' + payload.skylineKey;
   if (!force && key === desktopOverlayPushState.lastLyricsKey && now - desktopOverlayPushState.lyricsAt < 900) return;
   // 换歌时立即发整首歌词，之后每 3 秒补发一次，桌面歌词窗口重建后也能拿到；其余时候发 null，免得主进程每次都转发整首歌词。
-  var sendLines = payload.skyline && (payload.skylineKey !== desktopOverlayPushState.skylineKey || now - (desktopOverlayPushState.skylineAt || 0) > 3000);
+  var sendLines = payload.skyline && (force || payload.skylineKey !== desktopOverlayPushState.skylineKey || now - (desktopOverlayPushState.skylineAt || 0) > 3000);
   payload.skylineLines = sendLines ? skylineDesktopLines() : null;
   if (sendLines) {
     desktopOverlayPushState.skylineKey = payload.skylineKey;
@@ -1416,6 +1437,7 @@ function applyDesktopLyricsState(force) {
   if (!api) return;
   normalizeDevelopmentLockedFxState();
   var payload = desktopLyricsPayload(true, true);
+  if (payload.skyline) payload.skylineLines = skylineDesktopLines();
   var payloadCustomFontId = payload.customFont ? payload.customFont.id : '';
   if (typeof api.setDesktopLyricsEnabled === 'function') {
     desktopOverlayPushState.lastLyricsCustomFontId = payloadCustomFontId;
@@ -1627,6 +1649,7 @@ function toggleFullscreen() {
 
   if (typeof api.onDesktopLyricsLockState === 'function') {
     api.onDesktopLyricsLockState(function (payload) {
+      if (fx.desktopLyricsTaskbar === true) return;
       var locked = !payload || payload.locked !== false;
       if (fx.desktopLyricsClickThrough === locked) return;
       fx.desktopLyricsClickThrough = locked;
@@ -1644,6 +1667,23 @@ function toggleFullscreen() {
       updateFxInputs();
       saveLyricLayout({ user: true, reason: 'desktopLyrics' });
       showToast(enabled ? '桌面歌词已开启' : '桌面歌词已关闭');
+    });
+  }
+  if (typeof api.onDesktopLyricsTaskbarPositionChanged === 'function'
+      && typeof api.ackDesktopLyricsTaskbarPositionChange === 'function') {
+    var lastTaskbarPositionRevision = -1;
+    api.onDesktopLyricsTaskbarPositionChanged(function (payload) {
+      if (!payload || payload.position == null || payload.revision == null) return;
+      var position = Number(payload.position);
+      var revision = Number(payload.revision);
+      if (!isFinite(position) || !isFinite(revision) || revision <= lastTaskbarPositionRevision) return;
+      lastTaskbarPositionRevision = revision;
+      fx.desktopLyricsTaskbarX = normalizeDesktopLyricsTaskbarX(position);
+      saveLyricLayout({ user: true, reason: 'desktopLyricsTaskbarX', syncDisk: true });
+      Promise.resolve(api.ackDesktopLyricsTaskbarPositionChange(revision)).then(function (result) {
+        if (result && result.ok === true) pushDesktopLyricsState(true);
+        else console.warn('taskbar lyrics position acknowledgement failed:', result && result.error);
+      }).catch(function (error) { console.warn('taskbar lyrics position acknowledgement failed:', error); });
     });
   }
 

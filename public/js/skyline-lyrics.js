@@ -9,6 +9,10 @@
   var MAIN_SIZE = 0.26;     // 当前句字号 / 长条高度
   var NEXT_SCALE = 0.42;    // 下一句相对当前句的大小
   var MAX_W = 0.36;         // 当前句最大宽度，占长条宽度的比例
+  // A 48px taskbar cannot use the same two-line proportions as a tall canvas.
+  // Keep the same animation and word timing, but reserve more room for text.
+  var DESKTOP_LAYOUT = { mainY: MAIN_Y, nextY: NEXT_Y, mainSize: MAIN_SIZE, nextScale: NEXT_SCALE, maxWidth: MAX_W, exitRise: 0.18 };
+  var TASKBAR_LAYOUT = { mainY: 0.36, nextY: 0.76, mainSize: 0.43, nextScale: 0.48, maxWidth: 0.70, exitRise: 0.08 };
   var SWAP = 0.16;          // 下一句上移成为当前句的时长（秒）
   var EXIT = 0.12;          // 旧句上移淡出的时长（秒）
   var GROW = 0.1;           // 当前句在唱的过程中放大 10%
@@ -261,6 +265,7 @@
     this.opaque = !!opts.opaque;
     this.pad = opts.pad == null ? 0.25 : Math.max(0, Number(opts.pad) || 0);
     this.size = opts.size || null;
+    this.taskbarMode = opts.taskbar === true;
     // opts.cloud3d：true 时不在画布上画词云，由调用方用 cloudView() 拿到每个词的位置、景深，自己按真实前后关系画（播放器 3D 场景）。
     this.cloud3d = !!opts.cloud3d;
     this.keep = null;
@@ -293,6 +298,15 @@
     for (var i = 0; i < this.lines.length; i++) this.lines[i].layout = null;
     this.cloud.reset(this.lines, this.lastT, this.canvas.width, this.bandH);
   };
+  Skyline.prototype.layoutProfile = function () {
+    return this.taskbarMode ? TASKBAR_LAYOUT : DESKTOP_LAYOUT;
+  };
+  Skyline.prototype.setTaskbarMode = function (enabled) {
+    enabled = enabled === true;
+    if (this.taskbarMode === enabled) return;
+    this.taskbarMode = enabled;
+    for (var i = 0; i < this.lines.length; i++) this.lines[i].layout = null;
+  };
   // 画布像素尺寸跟随显示尺寸（或 opts.size）；返回 false 表示画布没有显示出来。
   Skyline.prototype.fit = function () {
     var c = this.canvas;
@@ -312,11 +326,12 @@
     var w = this.canvas.width, h = this.bandH, L = line.layout;
     if (L && L.w === w && L.h === h) return L;
     var ctx = this.ctx;
-    var size = h * MAIN_SIZE;
+    var profile = this.layoutProfile();
+    var size = h * profile.mainSize;
     ctx.font = 'bold ' + size + 'px ' + FONT;
     var width = ctx.measureText(line.text).width;
-    if (width > w * MAX_W) {
-      size *= w * MAX_W / width;
+    if (width > w * profile.maxWidth) {
+      size *= w * profile.maxWidth / width;
       ctx.font = 'bold ' + size + 'px ' + FONT;
       width = ctx.measureText(line.text).width;
     }
@@ -343,12 +358,45 @@
   Skyline.prototype.pose = function (line, t) {
     var k = ease((t - line.start) / SWAP);
     var grow = 1 + GROW * clamp01((t - line.start) / Math.max(2, line.end - line.start));
+    var profile = this.layoutProfile();
     return {
       k: k,
-      scale: NEXT_SCALE + (grow - NEXT_SCALE) * k,
-      y: this.bandH * (NEXT_Y + (MAIN_Y - NEXT_Y) * k),
+      scale: profile.nextScale + (grow - profile.nextScale) * k,
+      y: this.bandH * (profile.nextY + (profile.mainY - profile.nextY) * k),
       alpha: 0.6 + 0.4 * k
     };
+  };
+  // Main and next lyric bounds in canvas pixels; cloud words remain click-through.
+  Skyline.prototype.interactionBounds = function () {
+    if (!this.bandH || !this.canvas.width || !this.lines.length) return null;
+    var t = this.clock && isFinite(this.clock.t) ? this.clock.t : this.lastT;
+    var cur = this.lines[this.idx], next = this.lines[this.idx + 1];
+    var bounds = null;
+    var add = function (line, scale, y) {
+      if (!line || !(scale > 0)) return;
+      var layout = this.layout(line);
+      var halfWidth = layout.width * scale / 2;
+      var halfHeight = layout.size * scale * .68;
+      var rect = {
+        left: this.canvas.width / 2 - halfWidth,
+        right: this.canvas.width / 2 + halfWidth,
+        top: this.bandTop + y - halfHeight,
+        bottom: this.bandTop + y + halfHeight
+      };
+      bounds = bounds ? {
+        left: Math.min(bounds.left, rect.left), top: Math.min(bounds.top, rect.top),
+        right: Math.max(bounds.right, rect.right), bottom: Math.max(bounds.bottom, rect.bottom)
+      } : rect;
+    }.bind(this);
+    if (cur) {
+      var p = this.pose(cur, t);
+      add(cur, p.scale, p.y);
+    }
+    if (next && (!cur || t > cur.start)) {
+      var profile = this.layoutProfile();
+      add(next, profile.nextScale, this.bandH * profile.nextY);
+    }
+    return bounds;
   };
   // t 为 null 时整句画成未唱的颜色；glow 为辉光强度（0-1）。
   Skyline.prototype.drawLine = function (line, L, scale, y, alpha, glow, t, theme) {
@@ -434,14 +482,15 @@
     this.keep = keep;
     if (!this.cloud3d) this.cloud.draw(ctx, h, theme, keep);
 
+    var profile = this.layoutProfile();
     if (next) {
       var appear = cur ? clamp01((t - cur.start) / SWAP) : 1;
-      this.drawLine(next, this.layout(next), NEXT_SCALE, h * NEXT_Y, 0.6 * appear * fade, 0.3, null, theme);
+      this.drawLine(next, this.layout(next), profile.nextScale, h * profile.nextY, 0.6 * appear * fade, 0.3, null, theme);
     }
     if (cur && prev && t - cur.start < EXIT) { // 旧句从主位置上移淡出
       var e = ease((t - cur.start) / EXIT);
       var q = this.pose(prev, cur.start);
-      this.drawLine(prev, this.layout(prev), q.scale, q.y - h * 0.18 * e, (1 - e) * fade, 1 - e, prev.end, theme);
+      this.drawLine(prev, this.layout(prev), q.scale, q.y - h * profile.exitRise * e, (1 - e) * fade, 1 - e, prev.end, theme);
     }
     if (cur) {
       if (p.k < 1) {

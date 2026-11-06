@@ -11,11 +11,17 @@ function harness() {
   const ctx = vm.createContext({
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     desktopLyricsRequestedEnabled: false, desktopLyricsState: {}, desktopLyricsWindow: null,
+    taskbarLyricsRuntime: null, taskbarLyricsRecreateAfterClose: false,
+    closeTaskbarLyricsRuntime() {},
+    desktopLyricsLastTaskbarLayout: null,
     appQuitting: false, isTrustedMainWindowIpc: e => e === 'main',
     isTrustedDesktopLyricsIpc: e => e === 'main' || e === 'overlay',
     createDesktopLyricsWindow: payload => { created.push(payload); ctx.desktopLyricsState = payload; },
+    cancelTaskbarLyricsDrag() {},
+    stopTaskbarLyricsPointerPoller() {},
+    taskbarLyricsStateWithProtectedPosition: payload => ({ ...ctx.desktopLyricsState, ...(payload || {}) }),
     broadcastDesktopLyricsEnabledState: value => events.push(value),
-    stopDesktopLyricsMousePoller() {}, sendDesktopLyricsState() {},
+    stopDesktopLyricsMousePoller() {}, stopTaskbarLyricsWatcher() {}, stopTaskbarLyricsTopmostGuard() {}, sendDesktopLyricsState() {},
   });
   vm.runInContext(text.slice(text.indexOf('function closeDesktopLyricsWindow('), text.indexOf('function nativeWindowHandleDecimal(')), ctx);
   vm.runInContext(text.slice(text.indexOf("ipcMain.handle('mineradio-desktop-lyrics-set-enabled'"), text.indexOf("ipcMain.handle('mineradio-desktop-lyrics-set-dragging'")), ctx);

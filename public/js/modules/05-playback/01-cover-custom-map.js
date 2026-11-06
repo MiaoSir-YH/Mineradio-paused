@@ -1,8 +1,8 @@
 function isTypingTarget(target) {
   if (!target) return false;
   var tag = String(target.tagName || '').toUpperCase();
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  return !!(target.isContentEditable || (target.closest && target.closest('[contenteditable="true"]')));
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION' || tag === 'OPTGROUP') return true;
+  return !!(target.isContentEditable || (target.closest && target.closest('select, [contenteditable="true"]')));
 }
 function readCustomCoverMap() {
   try {

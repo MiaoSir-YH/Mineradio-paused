@@ -1,4 +1,5 @@
 {
+  "beforePack": "scripts/build-taskbar-lyrics-host.js",
   "appId": "com.mineradio.beat.internal",
   "productName": "Mineradio_Beat",
   "directories": {
@@ -74,5 +75,8 @@
     "include": "build/installer-internal-beta.nsh",
     "artifactName": "Mineradio_Beat-v${version}-灰度内测版-Setup.${ext}"
   },
-  "publish": null
+  "publish": null,
+  "asarUnpack": [
+    "build/taskbar-lyrics-host.exe"
+  ]
 }

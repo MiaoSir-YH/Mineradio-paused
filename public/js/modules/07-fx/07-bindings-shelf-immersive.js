@@ -10,6 +10,7 @@ function bindFxPanel() {
   buildPresetGrid();
   renderUserFxArchives();
   buildLyricColorControls();
+  initDesktopLyricsDisplays();
   var ids = [
     ['fx-intensity', 'intensity'], ['fx-depth', 'depth'], ['fx-coverres', 'coverResolution'], ['fx-cineshake', 'cinemaShake'], ['fx-lyricglow', 'lyricGlowStrength'], ['fx-lyricbgadapt', 'lyricBackgroundAdapt'],
     ['fx-sonicamp', 'sonicGroundAmplitude'], ['fx-sonicspeed', 'sonicGroundMotionSpeed'], ['fx-sonicdensity', 'sonicGroundDensity'],
@@ -97,7 +98,7 @@ function bindFxPanel() {
       if (pair[1] === 'playlistPanelGlassDensity') fx.playlistPanelGlassDensity = clampRange(fx.playlistPanelGlassDensity, 0.55, 1);
       if (pair[1] === 'playlistPanelOpenDuration') fx.playlistPanelOpenDuration = clampRange(fx.playlistPanelOpenDuration, 0.08, 0.72);
       if (pair[1] === 'playlistPanelCloseDuration') fx.playlistPanelCloseDuration = clampRange(fx.playlistPanelCloseDuration, 0.06, 0.48);
-      if (pair[1] === 'desktopLyricsSize') fx.desktopLyricsSize = clampRange(fx.desktopLyricsSize, 0.72, 1.55);
+      if (pair[1] === 'desktopLyricsSize') fx.desktopLyricsSize = clampRange(fx.desktopLyricsSize, 0.20, 1.55);
       if (pair[1] === 'desktopLyricsOpacity') fx.desktopLyricsOpacity = clampRange(fx.desktopLyricsOpacity, 0.28, 1);
       if (pair[1] === 'desktopLyricsY') fx.desktopLyricsY = clampRange(fx.desktopLyricsY, 0.08, 0.92);
       if (pair[1] === 'wallpaperOpacity') fx.wallpaperOpacity = clampRange(fx.wallpaperOpacity, 0.35, 1);
@@ -150,7 +151,6 @@ function bindFxPanel() {
       if (/^playlistPanel/.test(pair[1])) applyPlaylistPanelFxSettings();
       if (/^shelf(Size|OffsetX|OffsetY|OffsetZ|AngleY|Opacity|BgOpacity|Detail|Summon|Camera)/.test(pair[1]) && shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
       syncLyricRealtimeFxChange(pair[1], { deferred: true });
-      if (/^(desktopLyricsSize|desktopLyricsOpacity|desktopLyricsY)$/.test(pair[1])) pushDesktopLyricsState(true);
       if (pair[1] === 'wallpaperOpacity') pushWallpaperState(true);
       var saveOpts = { user: true, reason: /^backgroundMedia(CropX|CropY|Zoom)$/.test(pair[1]) ? 'backgroundMediaCrop' : pair[1] };
       if (pair[1] === 'controlGlassChromaticOffset') saveOpts.syncDisk = true;
@@ -389,6 +389,19 @@ function toggleWallpaperModeFromUi() {
   });
 }
 function toggleFx(key) {
+  if (key === 'desktopLyricsTaskbar') {
+    if (fx.desktopLyricsTaskbar !== true && desktopLyricsDisplaysState.supported === false) {
+      showToast('当前系统不支持任务栏歌词');
+      return;
+    }
+    fx.desktopLyricsTaskbar = fx.desktopLyricsTaskbar !== true;
+    fx.desktopLyrics = true;
+    updateFxInputs();
+    saveLyricLayout({ user: true, reason: key });
+    applyDesktopLyricsState(true);
+    showToast(fx.desktopLyricsTaskbar ? '已启用任务栏歌词' : '已恢复桌面歌词');
+    return;
+  }
   if (isDevelopmentLockedFx(key)) {
     normalizeDevelopmentLockedFxState();
     saveLyricLayout({ user: true, reason: key });
