@@ -292,14 +292,41 @@ function firstLoggedProvider() {
   }
   return 'netease';
 }
-function providerAvatarSrc(provider, status) {
-  status = status || platformStatus(provider) || {};
-  if (status.avatar) return avatarSrc(status.avatar);
+function providerAvatarFallbackSrc(provider) {
   var meta = platformMeta(provider);
   var fill = provider === 'qq' ? '#bfd66b' : (provider === 'kugou' ? '#56e0ff' : (provider === 'qishui' ? '#45d68f' : (provider === 'spotify' ? '#1ed760' : '#d95b67')));
   var bg = provider === 'qq' ? '#11150b' : (provider === 'kugou' ? '#071722' : (provider === 'qishui' ? '#071a12' : (provider === 'spotify' ? '#06140a' : '#180b0f')));
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="48" fill="' + bg + '"/><circle cx="48" cy="48" r="34" fill="' + fill + '" opacity=".16"/><text x="48" y="56" text-anchor="middle" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="' + fill + '">' + meta.short + '</text></svg>';
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+}
+function qqTrustedAvatarSrc(provider, avatar) {
+  if (provider !== 'qq' || typeof avatar !== 'string') return '';
+  var raw = avatar.trim();
+  var match = /^https?:\/\/([^/?#]+)(?:[/?#]|$)/i.exec(raw);
+  if (!match) return '';
+  var authority = match[1].toLowerCase();
+  if (['thirdqq.qlogo.cn', 'q1.qlogo.cn', 'q2.qlogo.cn', 'thirdwx.qlogo.cn'].indexOf(authority) < 0) return '';
+  try {
+    var url = new URL(raw);
+    if (!/^https?:$/.test(url.protocol) || url.hostname !== authority || url.username || url.password || url.port) return '';
+    url.protocol = 'https:';
+    return url.href;
+  } catch (_) { return ''; }
+}
+function providerAvatarSrc(provider, status) {
+  status = status || platformStatus(provider) || {};
+  var direct = qqTrustedAvatarSrc(provider, status.avatar);
+  if (direct) return direct;
+  var src = status.avatar ? avatarSrc(status.avatar) : '';
+  return src || providerAvatarFallbackSrc(provider);
+}
+function bindProviderAvatarFallback(img, provider) {
+  if (!img) return;
+  img.referrerPolicy = 'no-referrer';
+  img.onerror = function () {
+    img.onerror = null;
+    img.src = providerAvatarFallbackSrc(provider);
+  };
 }
 function providerMembershipNeedsSync(provider, status) {
   if (!status || !status.loggedIn) return false;
@@ -380,7 +407,7 @@ function renderTopAccountPill(provider, opts) {
   var displayName = loggedIn ? ((provider === 'qq' && st.preview) ? '待接入' : providerAccountIdentity(provider, st)) : meta.label;
   var vipTag = providerVipBadge(provider, st, '', true);
   return '<span class="top-account-pill ' + (loggedIn ? 'online' : 'offline') + '" data-account-provider="' + escHtml(provider) + '">' +
-    '<img src="' + providerAvatarSrc(provider, st) + '" alt="">' +
+    '<img referrerpolicy="no-referrer" src="' + escHtml(providerAvatarSrc(provider, st)) + '" alt="">' +
     '<span class="top-account-name">' + escHtml(displayName) + '</span>' +
     vipTag +
     '</span>';

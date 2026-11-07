@@ -316,7 +316,8 @@ function updateLoginProviderCapsuleStatus(provider, btn) {
   if (logo) {
     if (st.loggedIn) {
       logo.classList.add('has-avatar');
-      logo.innerHTML = '<img src="' + providerAvatarSrc(provider, st) + '" alt="">';
+      logo.innerHTML = '<img referrerpolicy="no-referrer" src="' + escHtml(providerAvatarSrc(provider, st)) + '" alt="">';
+      bindProviderAvatarFallback(logo.querySelector('img'), provider);
     } else {
       logo.classList.remove('has-avatar');
       logo.textContent = meta.short;

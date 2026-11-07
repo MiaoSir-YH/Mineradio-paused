@@ -541,6 +541,9 @@ function renderUserBtn() {
     btn.innerHTML = externalProviders.map(function (provider) {
       return renderTopAccountPill(provider);
     }).join('');
+    if (btn.querySelectorAll) Array.prototype.forEach.call(btn.querySelectorAll('.top-account-pill[data-account-provider] > img'), function (img) {
+      bindProviderAvatarFallback(img, img.parentElement.getAttribute('data-account-provider'));
+    });
   } else {
     btn.classList.add('logged-out', 'login-eye-avatar');
     btn.title = '登录账号';
