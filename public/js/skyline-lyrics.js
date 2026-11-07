@@ -401,6 +401,10 @@
     this.cloudFrameWidth = width;
     this.cloudFrameHeight = height;
   };
+  // Keep the cloud's path and size independent of the current lyric width.
+  Skyline.prototype.taskbarCloudLaneHalf = function (metrics) {
+    return metrics.referenceWidth * 0.10;
+  };
   // Map the drawn word, not its animation state. Limits account for the
   // entire word and never reverse the requested direction when space is tight.
   Skyline.prototype.cloudPosition = function (x, halfWidth) {
@@ -412,7 +416,7 @@
     halfWidth = Math.max(0, Number(halfWidth) || 0);
     var margin = Math.max(2, this.bandH * 0.08);
     var outer = Math.max(0, (side < 0 ? center : w - center) - halfWidth - margin);
-    var inner = Math.min(outer, Math.max(this.half, this.cloudSafeHalf) + halfWidth + margin);
+    var inner = Math.min(outer, this.taskbarCloudLaneHalf(metrics) + halfWidth + margin);
     var ratio = clamp01(distance / Math.max(1, referenceCenter));
     var strength = (this.taskbarCloudSpacing - 0.5) * 2;
     ratio = clamp01(ratio + strength * 0.15 * ratio * (1 - ratio));
@@ -423,7 +427,7 @@
     var metrics = this.taskbarMetrics();
     var sideAvailable = x < metrics.referenceWidth / 2 ? metrics.anchorX : this.canvas.width - metrics.anchorX;
     var margin = Math.max(2, this.bandH * .08);
-    var channel = Math.max(0, sideAvailable - Math.max(this.half, this.cloudSafeHalf) - margin * 2);
+    var channel = Math.max(0, sideAvailable - this.taskbarCloudLaneHalf(metrics) - margin * 2);
     // Leave a quarter of the channel for different words' centers to spread.
     var maxHalf = channel * .375;
     var verticalRoom = Math.max(.5, Math.min(y, this.bandH - y) - Math.max(1, this.bandH * .04));
