@@ -172,7 +172,7 @@
     this.items = this.items.filter(function (it) { return it.alive || it.fade > 0; });
   };
   // keep(x, r)：半宽为 r 的词放在 x 处会挡住当前句时为 0，离开当前句时为 1。
-  Cloud.prototype.draw = function (ctx, h, theme, keep, position, edgeOpacity, fontScale, fitWord) {
+  Cloud.prototype.draw = function (ctx, h, theme, keep, position, edgeOpacity, fontScale, fitWord, positionY) {
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -201,13 +201,14 @@
         halfWidth *= fit;
         ctx.font = 'bold ' + size + 'px ' + FONT;
       }
-      var x = position ? position(it.x, halfWidth) : it.x;
+      var visualHalfWidth = it.boundRatio ? it.boundRatio * size : halfWidth;
+      var x = position ? position(it.x, halfWidth, blur, visualHalfWidth) : it.x;
       var alpha = alphaAt(it.z) * Math.max(0, Math.min(1, it.fade)) * keep(x, halfWidth)
         * (edgeOpacity ? edgeOpacity(x, halfWidth) : 1) * roomOpacity;
       if (alpha < 0.01) continue;
       ctx.filter = blur > 0.4 ? 'blur(' + blur + 'px)' : 'none';
       ctx.globalAlpha = alpha;
-      ctx.fillText(it.text, x, it.y);
+      ctx.fillText(it.text, x, positionY ? positionY(it.y) : it.y);
     }
     ctx.restore();
   };
@@ -285,6 +286,7 @@
     this.pad = opts.pad == null ? 0.25 : Math.max(0, Number(opts.pad) || 0);
     this.size = opts.size || null;
     this.taskbarMode = opts.taskbar === true;
+    this.scaleCloudLayout = opts.scaleCloudLayout === true;
     this.lyricSizeScale = 1;
     this.taskbarCloudSpacing = 0.5;
     this.taskbarGeometry = null;
@@ -330,7 +332,10 @@
     var size = this.lyricSizeScale;
     if (!this.taskbarMode) {
       if (size === 1) return DESKTOP_LAYOUT;
-      return Object.assign({}, DESKTOP_LAYOUT, { mainSize: DESKTOP_LAYOUT.mainSize * size });
+      return Object.assign({}, DESKTOP_LAYOUT, {
+        mainSize: DESKTOP_LAYOUT.mainSize * size,
+        nextY: this.scaleCloudLayout ? MAIN_Y + (NEXT_Y - MAIN_Y) * size : NEXT_Y
+      });
     }
     if (size === 1) return TASKBAR_LAYOUT;
     // Large taskbar text uses the slot progressively: grow the main line
@@ -355,6 +360,11 @@
     if (!isFinite(value)) value = 1;
     value = Math.max(0.2, Math.min(1.6, value));
     if (this.lyricSizeScale === value) return;
+    if (this.scaleCloudLayout && !this.taskbarMode) {
+      var ratio = value / this.lyricSizeScale;
+      this.half *= ratio;
+      this.cloudSafeHalf *= ratio;
+    }
     this.lyricSizeScale = value;
     for (var i = 0; i < this.lines.length; i++) this.lines[i].layout = null;
   };
@@ -407,8 +417,33 @@
   };
   // Map the drawn word, not its animation state. Limits account for the
   // entire word and never reverse the requested direction when space is tight.
-  Skyline.prototype.cloudPosition = function (x, halfWidth) {
-    if (!this.taskbarMode) return x;
+  Skyline.prototype.cloudPosition = function (x, halfWidth, blur, visualHalfWidth) {
+    if (!this.taskbarMode) {
+      if (!this.scaleCloudLayout) return x;
+      var anchor = this.canvas.width / 2;
+      var sourceDistance = Math.abs(x - anchor);
+      var distance = sourceDistance * this.lyricSizeScale;
+      if (this.lyricSizeScale > 1) {
+        // Reserve edge room at the maximum supported scale, then approach
+        // that layout continuously from the unchanged 1x positions.
+        var maximumScale = 1.6;
+        var wordHalf = Math.max(0, Number(visualHalfWidth) || Number(halfWidth) || 0);
+        var extent = (wordHalf + Math.max(0, Number(blur) || 0) * 2) * maximumScale / this.lyricSizeScale;
+        var limit = Math.max(0, anchor - extent - Math.max(2, this.bandH * .04));
+        var knee = limit * .70;
+        var base = sourceDistance <= knee ? sourceDistance : knee + (limit - knee)
+          * clamp01((sourceDistance - knee) / Math.max(1, anchor - knee));
+        var maxShift = Math.max(0, limit - base) * .75;
+        var desiredShift = sourceDistance * (maximumScale - 1);
+        var start = maxShift * .85;
+        var tail = maxShift - start;
+        var excess = Math.max(0, desiredShift - start);
+        var shift = desiredShift <= start ? desiredShift : (tail > 0 ? start + tail * excess / (tail + excess) : 0);
+        var progress = Math.min(1, (this.lyricSizeScale - 1) / (maximumScale - 1));
+        distance = sourceDistance + (base + shift - sourceDistance) * progress;
+      }
+      return anchor + (x < anchor ? -distance : distance);
+    }
     var w = this.canvas.width, metrics = this.taskbarMetrics();
     var center = metrics.anchorX, referenceCenter = metrics.referenceWidth / 2;
     var side = x < referenceCenter ? -1 : 1;
@@ -421,6 +456,11 @@
     var strength = (this.taskbarCloudSpacing - 0.5) * 2;
     ratio = clamp01(ratio + strength * 0.15 * ratio * (1 - ratio));
     return center + side * (inner + (outer - inner) * ratio);
+  };
+  Skyline.prototype.cloudPositionY = function (y) {
+    if (this.taskbarMode || !this.scaleCloudLayout) return y;
+    var anchor = this.bandH * MAIN_Y;
+    return anchor + (y - anchor) * this.lyricSizeScale;
   };
   Skyline.prototype.cloudWordFit = function (x, halfWidth, y, size, blur) {
     if (!this.taskbarMode || !(halfWidth > 0)) return { scale:1, opacity:1 };
@@ -617,18 +657,19 @@
     var L = cur && this.layout(cur);
     var p = cur && this.pose(cur, t);
     // 避让半宽按当前句放大后的宽度算，并平滑过渡；换句时句子先缩小再放大，直接跟着会让旁边的词一闪一闪。
-    var target = cur ? L.width * Math.max(1, p.scale) / 2 + h * 0.15 : 0;
+    var avoidanceScale = this.scaleCloudLayout && !this.taskbarMode ? this.lyricSizeScale : 1;
+    var target = cur ? L.width * Math.max(1, p.scale) / 2 + h * 0.15 * avoidanceScale : 0;
     this.half += (target - this.half) * Math.min(1, wallDt * (target > this.half ? 10 : 2.5));
     var profile = this.layoutProfile();
     var nextWidth = next ? this.layout(next).width * profile.nextScale / 2 : 0;
-    this.cloudSafeHalf = Math.max(target, nextWidth + h * 0.15);
+    this.cloudSafeHalf = Math.max(target, nextWidth + h * 0.15 * avoidanceScale);
     var half = this.taskbarMode ? Math.max(this.half, this.cloudSafeHalf) : this.half;
-    var keep = function (x, r) { return clamp01((Math.abs(x - metrics.anchorX) - r - half) / (h * 0.5)); };
+    var keep = function (x, r) { return clamp01((Math.abs(x - metrics.anchorX) - r - half) / (h * 0.5 * avoidanceScale)); };
     this.cloud.update(t, dt, wallDt, cloudWidth, h);
     this.keep = keep;
     if (!this.cloud3d) this.cloud.draw(ctx, h, theme, keep, this.cloudPosition.bind(this),
       this.taskbarMode ? this.cloudEdgeOpacity.bind(this) : null, this.cloudSizeScale(),
-      this.taskbarMode ? this.cloudWordFit.bind(this) : null);
+      this.taskbarMode ? this.cloudWordFit.bind(this) : null, this.cloudPositionY.bind(this));
 
     if (next) {
       var appear = cur ? clamp01((t - cur.start) / SWAP) : 1;
@@ -694,7 +735,7 @@
       var edge = clamp01(Math.min(x, w - x) / (w * fx));
       var alpha = alphaAt(it.z) * Math.max(0, Math.min(1, it.fade)) * keep(x, it.ratio * size / 2) * edge;
       if (alpha < 0.01) return;
-      items.push({ id: it.id, text: it.text, x: x, y: it.y, z: it.z, alpha: alpha, blur: blurAt(it.z, h) * cloudScale / size });
+      items.push({ id: it.id, text: it.text, x: x, y: this.cloudPositionY(it.y), z: it.z, alpha: alpha, blur: blurAt(it.z, h) * cloudScale / size });
     }, this);
     return { w: w, h: h, focusSize: sizeAt(CLOUD_FOCUS, h) * cloudScale, items: items };
   };

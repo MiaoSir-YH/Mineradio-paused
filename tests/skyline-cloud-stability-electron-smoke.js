@@ -22,6 +22,7 @@ if(process.versions.electron){
         {name:'taskbar-600',width:600,height:48,anchor:300,spacing:.5,taskbar:true,size:1},
         {name:'taskbar-840-edge',width:840,height:48,anchor:300,spacing:1,taskbar:true,size:1},
         {name:'desktop',width:920,height:190,anchor:460,spacing:.5,taskbar:false,size:.2},
+         {name:'desktop-scaled',width:920,height:190,anchor:460,spacing:.5,taskbar:false,size:.2,scaleCloudLayout:true},
         {name:'stage',width:920,height:190,anchor:460,spacing:.5,taskbar:false,size:1}
       ];
       function makeLines(current,next,duration) {
@@ -31,7 +32,7 @@ if(process.versions.electron){
       function sample(config,current,next,duration,start=1.5) {
         let seed=113,now=10000;Math.random=()=>{seed=seed*16807%2147483647;return (seed-1)/2147483646;};
         const c=document.createElement('canvas');c.style.width=config.width+'px';c.style.height=config.height+'px';document.body.appendChild(c);
-        const s=MineradioSkyline.create(c,{opaque:false,taskbar:config.taskbar,pad:config.taskbar?0:.25,
+        const s=MineradioSkyline.create(c,{opaque:false,taskbar:config.taskbar,scaleCloudLayout:config.scaleCloudLayout,pad:config.taskbar?0:.25,
           size:{w:config.width,h:config.height},now:()=>now});
         s.setLyricSizeScale(config.size);s.setTaskbarCloudSpacing(config.spacing);
         if(config.taskbar)s.setTaskbarGeometry({referenceWidth:600,anchorX:config.anchor});
@@ -49,7 +50,14 @@ if(process.versions.electron){
         };
         s.cloudPosition=function(x,half){
           const value=position.call(this,x,half),key=x<300?'QAL':'QAR';
-          if(planned[key])planned[key].x=value;
+          if(config.scaleCloudLayout){
+            const item=this.cloud.items.find(word=>word.x===x),matrix=ctx.getTransform();
+            if(item){
+              const y=this.cloudPositionY(item.y),font=ctx.font.split(' ').find(part=>part.endsWith('px'));
+              planned[key]={x:matrix.a*value+matrix.c*y+matrix.e,y:matrix.b*value+matrix.d*y+matrix.f,
+                font:parseFloat(font)*Math.hypot(matrix.a,matrix.b)};
+            }
+          }else if(planned[key])planned[key].x=value;
           return value;
         };
         ctx.fillText=function(text,x,y,...rest){
@@ -85,8 +93,13 @@ if(process.versions.electron){
           for(const key of ['QAL','QAR']){
             const a=baseline[i].drawn[key]||baseline[i].planned[key],b=other[i].drawn[key]||other[i].planned[key];if(!a||!b)continue;
             matched++;
-            for(const property of ['x','y','font','blur'])if(Math.abs(a[property]-b[property])>0.01)
-              errors.push({config:entry.config.name,scenario:label,frame:i,word:key,property,before:a[property],after:b[property]});
+            for(const property of ['x','y','font','blur']){
+              // A fully faded word is not painted, so its CSS blur filter is
+              // unavailable; mapping and font must still be finite and stable.
+              if(property==='blur'&&(!Number.isFinite(a.blur)||!Number.isFinite(b.blur)))continue;
+              if(!Number.isFinite(a[property])||!Number.isFinite(b[property])||Math.abs(a[property]-b[property])>0.01)
+                errors.push({config:entry.config.name,scenario:label,frame:i,word:key,property,before:a[property],after:b[property]});
+            }
             for(const v of [baseline[i].drawn[key],other[i].drawn[key]].filter(Boolean))if(v.left<-.5 || v.right>entry.config.width+.5)
               errors.push({config:entry.config.name,scenario:label,frame:i,word:key,property:'edge',left:v.left,right:v.right});
           }

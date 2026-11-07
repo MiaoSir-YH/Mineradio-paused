@@ -422,7 +422,7 @@
     var skyline = { inst: null, key: '', contentKey: '', on: false };
     function applySkylineState(next) {
       var want = !!next.skyline && !!window.MineradioSkyline;
-      if (want && !skyline.inst) skyline.inst = MineradioSkyline.create(document.getElementById('skyline'), { opaque: false, taskbar: state.taskbarMode });
+      if (want && !skyline.inst) skyline.inst = MineradioSkyline.create(document.getElementById('skyline'), { opaque: false, taskbar: state.taskbarMode, scaleCloudLayout: true });
       if (skyline.inst) {
         if (typeof skyline.inst.setTaskbarMode === 'function') skyline.inst.setTaskbarMode(state.taskbarMode);
         if (typeof skyline.inst.setLyricSizeScale === 'function') skyline.inst.setLyricSizeScale(state.taskbarMode ? state.taskbarSize : clamp(state.size, .20, 1.55, 1));
