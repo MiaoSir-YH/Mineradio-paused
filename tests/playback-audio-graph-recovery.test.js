@@ -76,7 +76,7 @@ function makeNode(context, kind) {
     connections: [],
     disconnectCount: 0,
     connect(target) { this.connections.push(target); },
-    disconnect() { this.disconnectCount += 1; },
+    disconnect() { this.disconnectCount += 1; this.connections.length = 0; },
   };
 }
 
@@ -133,6 +133,7 @@ function makeHarness(options = {}) {
   const mediaElementBindings = new WeakSet();
   const audioContext = {
     state: 'running',
+    sampleRate: 48000,
     destination: makeNode(null, 'destination'),
     createMediaElementSource(media) {
       calls.createMediaElementSource += 1;
@@ -161,6 +162,13 @@ function makeHarness(options = {}) {
       node.gain = { value: 1 };
       return node;
     },
+    createBiquadFilter() {
+      const node = makeNode(audioContext, 'biquad');
+      node.frequency = { value: 0 };
+      node.Q = { value: 0 };
+      node.gain = { value: 0 };
+      return node;
+    },
   };
   audioContext.destination.context = audioContext;
 
@@ -170,6 +178,7 @@ function makeHarness(options = {}) {
     'disconnectAudioGraphNodes',
     'replaceAudioElementForGraphRecovery',
     'resetPlaybackAudioGraphForSourceSwitch',
+    'prepareAlbumGaplessEqualizer',
     'initAudio',
     'readPlaybackAnalyserSignal',
     'rebuildPlaybackGraphWithCapture',
@@ -228,6 +237,8 @@ function makeHarness(options = {}) {
     Number,
     Promise,
   });
+  const eqPath = path.join(path.dirname(modulePath), '16-playback-equalizer.js');
+  vm.runInContext(fs.readFileSync(eqPath, 'utf8'), context, { filename: eqPath });
   vm.runInContext(executableSource, context, { filename: modulePath });
 
   const originalReplace = context.replaceAudioElementForGraphRecovery;
@@ -247,7 +258,7 @@ function makeHarness(options = {}) {
     entry.callback();
   }
 
-  return { context, audio, calls, runNextTimer };
+  return { context, audio, calls, runNextTimer, makeAudio };
 }
 
 function testCaptureTrackSwitchCreatesFreshAudioLifetime() {
@@ -397,4 +408,31 @@ testFrozenClockDoesNotTriggerCaptureRebuild();
 testTwoAdvancingSilentSamplesTriggerCaptureRebuild();
 testTransientCaptureSourceFailureRetainsForcedCaptureRetry();
 testForcedCaptureWaitsForMediaReadyState();
+
+function testGaplessHandoffRetainsEqualizerAndMediaSource() {
+  const { context, calls, makeAudio } = makeHarness();
+  context.playbackEqualizerSettings = { enabled: true, preset: 'bass' };
+  assert.equal(context.initAudio(), true);
+  const eq = context.playbackEqualizerGraph;
+  assert.equal(eq.filters.length, 10);
+  assert.equal(eq.filters[0].gain.value, 5);
+  assert.deepEqual(context.gainNode.connections, [eq.input]);
+
+  const nextMedia = makeAudio();
+  context.prepareAlbumGaplessEqualizer(nextMedia);
+  const nextSource = nextMedia.__mineradioGaplessSource;
+  assert.deepEqual(nextSource.connections, [eq.input]);
+
+  context.audio = nextMedia;
+  context.resetPlaybackAudioGraphForSourceSwitch('album-gapless-handoff');
+  assert.equal(context.audioGraphHealthy(), true);
+  assert.equal(context.source, nextSource);
+  assert.equal(calls.createMediaElementSource, 2);
+  assert.equal(nextMedia.__mineradioGaplessSource, undefined);
+  assert.equal(context.playbackEqualizerGraph, eq);
+  assert.deepEqual(nextSource.connections, [context.analyser, context.beatAnalyser]);
+  assert.deepEqual(context.gainNode.connections, [eq.input]);
+}
+
+testGaplessHandoffRetainsEqualizerAndMediaSource();
 console.log('OK playback-audio-graph-recovery');

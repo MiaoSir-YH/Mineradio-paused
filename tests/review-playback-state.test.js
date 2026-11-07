@@ -115,21 +115,3 @@ test('daily totals and streaks include repeated plays from the persistent daily 
   assert.equal(result.listenMs, 210000);
   assert.equal(result.streak, 2);
 });
-
-test('a rejected obsolete Cuefield preparation preserves the current in-flight pair', async () => {
-  const { createCuefieldAutoMix } = require('../public/js/modules/05-playback/16-cuefield-automix-core');
-  const oldPlan = deferred(); const newPlan = deferred(); let calls = 0;
-  const engine = createCuefieldAutoMix({ planTransition: () => ++calls === 1 ? oldPlan.promise : newPlan.promise });
-  engine.setEnabled(true);
-  const context = { token: 1, currentIndex: 0, nextIndex: 1, currentSong: { key: 'A' }, nextSong: { key: 'B' } };
-  const old = engine.prepare(context); await Promise.resolve();
-  engine.reset('track-switch');
-  const currentContext = { ...context, token: 2, currentSong: { key: 'B' }, nextSong: { key: 'C' } };
-  const current = engine.prepare(currentContext); await Promise.resolve();
-  oldPlan.reject(new Error('late failure'));
-  assert.equal((await old).status, 'stale');
-  assert.equal(engine.snapshot().preparing, true);
-  assert.equal(engine.prepare(currentContext), current);
-  newPlan.resolve({ ok: false });
-  assert.equal((await current).status, 'fallback');
-});

@@ -50,9 +50,6 @@ function jsCheckFiles() {
   addIfExists(path.join(appRoot, 'server.js'));
   addIfExists(path.join(appRoot, 'qq-vip-api.js'));
   addIfExists(path.join(appRoot, 'dj-analyzer.js'));
-  walk(path.join(appRoot, 'cuefield')).forEach(file => {
-    if (file.endsWith('.js')) files.push(file);
-  });
 
   return [...new Set(files)].sort();
 }
@@ -422,7 +419,6 @@ function scanForbiddenMarkers() {
     path.join(appRoot, 'desktop'),
     path.join(appRoot, 'server.js'),
     path.join(appRoot, 'dj-analyzer.js'),
-    path.join(appRoot, 'cuefield')
   ];
   const files = [];
   for (const target of scanTargets) {
@@ -2953,106 +2949,6 @@ function checkNonCurrentAudioPrefetchGuard() {
   console.log('[OK] Non-current audio URL prefetch stays disabled by default.');
 }
 
-function checkCuefieldAutoMixGuard() {
-  logStep('Cuefield AutoMix integration guard');
-  const serverText = fs.readFileSync(path.join(appRoot, 'server.js'), 'utf8');
-  const desktopText = fs.readFileSync(path.join(appRoot, 'desktop', 'main.js'), 'utf8');
-  const loaderText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'index-loader.js'), 'utf8');
-  const htmlText = fs.readFileSync(path.join(appRoot, 'public', 'index.html'), 'utf8');
-  const cssText = fs.readFileSync(path.join(appRoot, 'public', 'css', 'index.css'), 'utf8');
-  const coreText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '05-playback', '16-cuefield-automix-core.js'), 'utf8');
-  const timelineText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '05-playback', '17-cuefield-timeline-executor.js'), 'utf8');
-  const integrationText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '05-playback', '18-cuefield-automix-integration.js'), 'utf8');
-  const adapterText = fs.readFileSync(path.join(appRoot, 'cuefield', 'adapter-mineradio.js'), 'utf8');
-  const bridgeText = fs.readFileSync(path.join(appRoot, 'cuefield', 'mineradio-bridge.js'), 'utf8');
-  const recipeText = fs.readFileSync(path.join(appRoot, 'cuefield', 'recipe-planner.js'), 'utf8');
-  const beatPrefetchText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '03-beat', '00-tempo-worker-cache-prefetch.js'), 'utf8');
-  const coreStoreText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '00-state', '00-core-stores.js'), 'utf8');
-  const beatCameraText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '01-scene', '02-beat-camera-runtime.js'), 'utf8');
-  const audioGraphText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '05-playback', '08-audio-graph-controls.js'), 'utf8');
-  const playbackText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '05-playback', '13-playback-start-audio.js'), 'utf8');
-  const controlsText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '05-playback', '14-player-controls.js'), 'utf8');
-  const progressText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '06-lyrics', '04-progress-seek.js'), 'utf8');
-  const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8'));
-  const beta = JSON.parse(fs.readFileSync(path.join(appRoot, 'electron-builder.internal-beta.json'), 'utf8'));
-  if (!packageJson.build.files.includes('cuefield/**/*') || !(beta.files || []).includes('cuefield/**/*')) {
-    fail('Cuefield runtime files must be included in regular and internal-beta packages');
-  }
-  if (!/16-cuefield-automix-core\.js/.test(loaderText) || !/17-cuefield-timeline-executor\.js/.test(loaderText) || !/18-cuefield-automix-integration\.js/.test(loaderText) || !/id="cuefield-automix-btn"/.test(htmlText) || !/id="cuefield-feedback"/.test(htmlText) || !/#cuefield-automix-btn\.cuefield-automix-on/.test(cssText)) {
-    fail('Cuefield AutoMix needs loaded runtime modules, a default-off control, and local feedback UI');
-  }
-  if (!/var cuefieldAutoMixEnabled = false/.test(integrationText) || !/CUEFIELD_AUTOMIX_STORE_KEY/.test(integrationText) || !/if \(!cuefieldAutoMixEnabled \|\| !audio/.test(integrationText) || !/function toggleCuefieldAutoMix/.test(integrationText)) {
-    fail('Cuefield AutoMix must be opt-in and must not prepare while disabled');
-  }
-  if (!/function createCuefieldAutoMix/.test(coreText) || !/function buildCuefieldTimelineExecution/.test(timelineText) || !/planCuefieldTransitionFromCache/.test(serverText) || !/pn === '\/api\/cuefield\/transition'/.test(serverText) || !/pn === '\/api\/cuefield\/feedback'/.test(serverText)) {
-    fail('Cuefield planner, timeline executor, and local server endpoints are incomplete');
-  }
-  if (!/MINERADIO_BEAT_COMBOS/.test(adapterText) || !/raw\[7\]/.test(adapterText) || !/flags & 1/.test(adapterText) || !/flags & 2/.test(adapterText) || !/flags & 4/.test(adapterText) || /raw\[8\][^\n]{0,80}downbeat|raw\[8\][^\n]{0,80}>=\s*7/.test(adapterText)) {
-    fail('Cuefield must decode packed comboIdx and flags independently so ordinary camera/pulse flags cannot become false downbeats');
-  }
-  if (!/chooseTransitionWindow/.test(bridgeText) || !/buildStructureMap/.test(bridgeText) || !/normalizeRecentRecipes/.test(bridgeText) || !/resolveListeningFloor/.test(bridgeText) || !/safety-long-blend/.test(recipeText) || !/end-of-track-crossfade/.test(bridgeText)) {
-    fail('Cuefield must keep structure-aware window selection, recipe cooldown, listening floors, and bounded safety/end-of-track fallbacks');
-  }
-  if (!/cuefieldLyricTextForSong/.test(integrationText) || !/fromLrc:\s*lyricPair\[0\]/.test(integrationText) || !/toLrc:\s*lyricPair\[1\]/.test(integrationText) || !/allowWeak:\s*false/.test(integrationText) || !/allowSafetyFallback:\s*true/.test(integrationText) || !/allowLiveEndCrossfadeFallback:\s*true/.test(integrationText)) {
-    fail('Cuefield must consume the existing lyric cache, reject weak beatmixes, and retain explicit bounded safety fallbacks');
-  }
-  if (!/var provider = songProviderKey\(song\)/.test(beatPrefetchText) || !/return provider \+ ':' \+ id/.test(beatPrefetchText) || !/resolveAlbumGaplessPlaybackData\(song\)/.test(beatPrefetchText)) {
-    fail('Cuefield beatmaps must use provider-aware keys and resolve the same provider playback path as the real player');
-  }
-  if (!/CUEFIELD_FEEDBACK_FILE/.test(desktopText) || !/appendCuefieldFeedback/.test(serverText) || !/readCuefieldFeedbackStats/.test(serverText) || /feedback-remote|CUEFIELD_FEEDBACK_REMOTE|https?:\/\/.*cuefield/i.test(serverText + integrationText)) {
-    fail('Cuefield feedback must remain local and must not wire a remote feedback service');
-  }
-  if (!/albumGaplessHandoff:\s*true/.test(integrationText) || !/resetCuefieldAutoMix\(opts\.cuefieldAutoMix/.test(playbackText) || !/scheduleCuefieldAutoMixPrepare\(token, idx/.test(playbackText) || !/audio\.onended = function \(\) \{[\s\S]{0,160}cuefieldAutoMixExecuting/.test(playbackText) || !/tickCuefieldAutoMix/.test(progressText) || !/resetCuefieldAutoMix\('manual-seek'\)/.test(progressText)) {
-    fail('Cuefield must hand off through the proven player path and reset for manual seeking');
-  }
-  if (!/function claimCuefieldPreparedAudioForPlayback/.test(integrationText) || !/media === audio[\s\S]{0,100}claimCuefieldPreparedAudioForPlayback\(media\);[\s\S]{0,40}return;/.test(integrationText) || !/audio = opts\.preloadedAudio;[\s\S]{0,180}claimCuefieldPreparedAudioForPlayback\(audio\)/.test(playbackText) || !/preserveExecution:\s*!!opts\.cuefieldAutoMix/.test(playbackText)) {
-    fail('Cuefield must transfer preloaded B-deck ownership before preparing another track so it cannot pause active playback');
-  }
-  if (!/function buildEqualPowerCurve/.test(timelineText) || !/function cuefieldVolumeCurveValue/.test(integrationText) || !/equal-power-in/.test(integrationText) || !/equal-power-out/.test(integrationText) || !/function cuefieldApplyGraphEcho/.test(integrationText) || !/function cuefieldApplyGraphDuck/.test(integrationText) || !/function cuefieldApplyTimelineAction/.test(integrationText) || !/volume-only-fallback/.test(integrationText)) {
-    fail('Cuefield must execute equal-power A/B volume curves and safely downgrade advanced graph actions');
-  }
-  if (!/await cuefieldApplyTimelineAction\(action, pending, nextMedia, context\)/.test(integrationText) || !/handoffDelayMs > elapsedMs[\s\S]{0,120}await cuefieldDelay/.test(integrationText) || !/nextMedia\.paused \|\| nextMedia\.ended/.test(integrationText) || !/var handoffReady = await runCuefieldTimeline\(pending, nextMedia, transitionContext\);[\s\S]{0,150}if \(!handoffReady \|\| !cuefieldTransitionStillCurrent\(pending, transitionContext\)\)/.test(integrationText)) {
-    fail('Cuefield ownership handoff must await the cancellable action timeline and a live incoming deck');
-  }
-  if (!/var cuefieldTransitionGeneration = 0/.test(integrationText) || !/cuefieldTransitionGeneration\+\+;[\s\S]{0,120}clearCuefieldTimelineTimers\(\)/.test(integrationText) || !/function cuefieldDelay\(delayMs, generation\)/.test(integrationText) || !/context\.generation !== cuefieldTransitionGeneration/.test(integrationText) || !/audio !== context\.outgoingMedia/.test(integrationText)) {
-    fail('Cuefield reset, seek, and pause must invalidate delayed transitions before they can wake and rewrite current audio gain');
-  }
-  if (!/var cuefieldMediaFadeTimer = 0/.test(integrationText) || !/cuefieldMediaFadeTimer = setInterval\(function \(\) \{[\s\S]{0,100}applyStep\(\)/.test(integrationText) || !/context\.outgoingMedia && context\.outgoingMedia\.currentTime/.test(integrationText) || !/if \(cuefieldMediaFadeTimer\) clearInterval\(cuefieldMediaFadeTimer\)/.test(integrationText)) {
-    fail('Cuefield gain must follow the outgoing media clock and keep a timer watchdog when visual RAF is throttled');
-  }
-  if (!/function recoverCuefieldAutoMixEndedOutgoing/.test(integrationText) || !/__mineradioCuefieldEndedRecoveryToken/.test(playbackText)) {
-    fail('Cuefield must resume ordinary queue advance if its outgoing deck ends before a failed handoff settles');
-  }
-  if (!/__mineradioPreparedGraphFailed/.test(integrationText) || !/The first element is permanently tied/.test(integrationText)) {
-    fail('Cuefield must rebuild a clean fallback media element after a partial WebAudio graph failure');
-  }
-  if (!/var cuefieldActiveTransitionContext = null/.test(integrationText) || !/shouldRestoreOutgoing[\s\S]{0,520}rampAudioOutputGain\(targetVolume, 120\)/.test(integrationText) || !/async function runCuefieldNormalFallback\(\)/.test(integrationText) || !/audio !== nextMedia && audio !== transitionContext\.outgoingMedia/.test(integrationText)) {
-    fail('Cuefield disable/cancel must restore its outgoing deck and pre-adoption handoff failures must use normal playback fallback');
-  }
-  if (!/function cuefieldAutoMixBlockedByAlbumGapless\(index\)[\s\S]{0,120}albumGaplessQueueCanAdvance\(index\)/.test(integrationText) || !/if \(cuefieldAutoMixBlockedByAlbumGapless\(currentIndex\)\) return false;/.test(integrationText) || !/cuefieldAutoMixBlockedByAlbumGapless\(pending\.currentIndex\)[\s\S]{0,180}album-gapless-priority/.test(integrationText) || !/function startAlbumGaplessMix\(preload, reason, remaining\)[\s\S]{0,360}cuefieldAutoMixExecuting[^\n]*return false;/.test(playbackText)) {
-    fail('Cuefield AutoMix and album gapless must stay mutually exclusive so only one prepared B-deck can transition');
-  }
-  if (!/albumGaplessMixed:\s*true/.test(integrationText) || !/preserveGain:\s*albumGaplessMixed/.test(playbackText) || !/preserveGain:\s*!!opts\.preserveGain/.test(controlsText) || !/else if \(!opts\.preserveGain\) restorePlaybackGain\(\)/.test(controlsText)) {
-    fail('Cuefield mixed handoff must preserve the completed incoming gain through the shared playback-start path');
-  }
-  if (!/CUEFIELD_AUTOMIX_NORMAL_START_SETTLE_MS = 4200/.test(integrationText) || !/CUEFIELD_AUTOMIX_HANDOFF_SETTLE_MS = 5200/.test(integrationText) || !/function cuefieldAutoMixVisualTransitionBusy/.test(integrationText) || !/cuefieldAutoMixVisualTransitionBusy\(\)[\s\S]{0,120}scheduleCuefieldAutoMixPrepare\(token, currentIndex, 900/.test(integrationText) || !/cuefieldAutoMixPostSwitchDelay\(!!opts\.cuefieldAutoMix\)/.test(playbackText)) {
-    fail('Cuefield background analysis must wait for cover and particle transition work to settle');
-  }
-  if (!/function contextStillCurrent\(\)/.test(integrationText) || !/var analysisToken = beatMapToken/.test(integrationText) || !/descriptor = await cuefieldAutoMixAudioDescriptor\(song\);[\s\S]{0,220}analysisToken !== beatMapToken[\s\S]{0,120}cuefieldAutoMixVisualTransitionBusy\(\)/.test(integrationText) || !/analyzeAudioBeats\(descriptor\.proxyUrl, null, analysisToken/.test(integrationText)) {
-    fail('Cuefield beat analysis must revalidate track ownership and visual-idle state after resolving the next audio URL');
-  }
-  if (!/audioSourceMedia = null/.test(coreStoreText) || !/function cuefieldCreatePreparedAudioGraph/.test(integrationText) || !/createMediaElementSource\(media\)/.test(integrationText) || !/__mineradioPreparedAudioGraph/.test(audioGraphText) || !/preparedGraph\.adopted = true/.test(audioGraphText) || !/audioSourceMedia = audio/.test(audioGraphText)) {
-    fail('Cuefield must prepare B in the same AudioContext and adopt its existing source/analyser/gain graph without rebinding mid-playback');
-  }
-  if (!/function resetAudioVisualState\(options\)/.test(beatCameraText) || !/preserveEnvelope/.test(beatCameraText) || !/function resetBeatCameraSync\(t, options\)/.test(beatCameraText) || !/preserveMomentum/.test(beatCameraText) || !/resetAudioVisualState\(\{ preserveEnvelope: albumGaplessMixed \}\)/.test(playbackText) || !/preserveMomentum: albumGaplessMixed/.test(playbackText) || !/syncBeatMapPlaybackCursor\(audio \? audio\.currentTime : 0, albumGaplessMixed\)/.test(playbackText)) {
-    fail('mixed handoff must preserve the live particle envelope and camera momentum while aligning the new beat-map cursor');
-  }
-  if (!/var cuefieldMediaFadeSerial = 0/.test(integrationText) || !/function cancelCuefieldMediaFade/.test(integrationText) || !/function claimCuefieldPreparedAudioForPlayback\(media\)[\s\S]{0,180}cancelCuefieldMediaFade\(\)/.test(integrationText) || !/serial !== cuefieldMediaFadeSerial/.test(integrationText) || !/await applyAudioOutputDevice\(nextMedia\)/.test(integrationText)) {
-    fail('Cuefield must cancel the temporary B-deck fade and apply the selected output device before ownership handoff');
-  }
-  console.log('[OK] Cuefield AutoMix is opt-in, packages with the app, uses local feedback, and reuses safe handoff controls.');
-}
-
 function checkAlbumDetailGaplessGuard() {
   logStep('Album detail and explicit gapless guard');
   const htmlText = fs.readFileSync(path.join(appRoot, 'public', 'index.html'), 'utf8');
@@ -3110,6 +3006,14 @@ function checkAlbumDetailGaplessGuard() {
   }
   if (!/var albumGaplessAdoptedGain = 0/.test(playbackText) || !/albumGaplessAdoptedGain = albumGaplessMixed[\s\S]{0,100}Number\(audio\.volume\)/.test(playbackText) || !/setAudioOutputGainImmediate\(albumGaplessMixed \? albumGaplessAdoptedGain : audioSilentFloor\(\)\)/.test(playbackText) || !/preserveGain:\s*albumGaplessMixed/.test(playbackText) || !/rampAudioOutputGain\(targetVolume, ALBUM_GAPLESS_ADOPT_SLEW_MS\)/.test(playbackText) || !/preserveGain:\s*!!opts\.preserveGain/.test(controlsText) || !/else if \(!opts\.preserveGain\) restorePlaybackGain\(\)/.test(controlsText)) {
     fail('mixed album handoff must adopt, preserve, and gently settle the incoming gain without a restorePlaybackGain jump');
+  }
+  const beatCameraText = fs.readFileSync(path.join(appRoot, 'public', 'js', 'modules', '01-scene', '02-beat-camera-runtime.js'), 'utf8');
+  if (!/function resetAudioVisualState\(options\)/.test(beatCameraText) || !/preserveEnvelope/.test(beatCameraText)
+      || !/function resetBeatCameraSync\(t, options\)/.test(beatCameraText) || !/preserveMomentum/.test(beatCameraText)
+      || !/resetAudioVisualState\(\{ preserveEnvelope: albumGaplessMixed \}\)/.test(playbackText)
+      || !/preserveMomentum: albumGaplessMixed/.test(playbackText)
+      || !/syncBeatMapPlaybackCursor\(audio \? audio\.currentTime : 0, albumGaplessMixed\)/.test(playbackText)) {
+    fail('mixed album handoff must preserve the live particle envelope and camera momentum while aligning the new beat-map cursor');
   }
   if (!/preloadedAudio/.test(playbackText) || !/preloadedProxyAudioUrl/.test(playbackText) || !/albumGaplessMixed/.test(playbackText) || !/skipShuffleOrder: true/.test(playbackText)
       || !/await resolvePlaybackByProviderOrder\(nextSong,\s*\{\s*isCurrent: function \(\) \{ return serial === albumGaplessState\.serial && token === trackSwitchToken && sourceIdx === currentIdx; \}/.test(playbackText)
@@ -3655,12 +3559,13 @@ app.whenReady().then(async () => {
       if (runtime && runtime.viewport && !runtime.viewport.adaptiveLoad) failures.push('viewport adaptiveLoad missing');
       if (runtime && runtime.viewport && !(runtime.viewport.adaptiveLoad.avgMs > 0)) failures.push('adaptiveLoad avgMs was not sampled');
       if (!perf || !perf.render) failures.push('perf render snapshot missing');
-      const cuefieldButton = document.getElementById('cuefield-automix-btn');
-      if (!cuefieldButton) failures.push('Cuefield AutoMix button missing');
-      if (cuefieldButton && cuefieldButton.getAttribute('aria-pressed') !== 'false') failures.push('Cuefield AutoMix must default off in a fresh profile');
-      if (!window.CuefieldAutoMix || typeof window.CuefieldAutoMix.createCuefieldAutoMix !== 'function') failures.push('Cuefield AutoMix core missing');
-      if (!window.CuefieldTimelineExecutor || typeof window.CuefieldTimelineExecutor.buildCuefieldTimelineExecution !== 'function') failures.push('Cuefield timeline executor missing');
-      if (typeof toggleCuefieldAutoMix !== 'function' || typeof tickCuefieldAutoMix !== 'function') failures.push('Cuefield renderer integration missing');
+      const equalizerButton = document.getElementById('playback-equalizer-btn');
+      const equalizer = document.getElementById('playback-equalizer');
+      if (!equalizerButton || !equalizer || equalizer.querySelectorAll('input[type="range"]').length !== 10) {
+        failures.push('ten-band playback equalizer missing');
+      } else if (!equalizer.inert || equalizer.querySelector('#playback-equalizer-enabled').getAttribute('aria-checked') !== 'false') {
+        failures.push('equalizer must start closed and bypassed in a fresh profile');
+      }
       function inspectLyricTextureQualityTiers() {
         if (typeof makeLyricMask !== 'function' || typeof compactLyricLineMaskTexture !== 'function' || typeof makeLyricQualityTexture !== 'function') {
           return { ok: false, reason: 'lyric quality texture builders missing' };
@@ -5154,7 +5059,7 @@ function runElectronRuntimeCheck() {
   fs.writeFileSync(qaPreload, `
 try {
   window.localStorage.setItem('mineradio-startup-fast-skip-v1', 'true');
-  window.localStorage.removeItem('mineradio-cuefield-automix-v1');
+  window.localStorage.removeItem('mineradio.playbackEqualizer.v1');
 } catch (error) {}
 `, 'utf8');
 
@@ -5659,7 +5564,6 @@ async function main() {
   checkAudioOutputWorkflowPanelGuard();
   checkVolumeWheelStepGuard();
   checkNonCurrentAudioPrefetchGuard();
-  checkCuefieldAutoMixGuard();
   checkAlbumDetailGaplessGuard();
   checkInternalBetaPackagingGuard();
   checkSonicTopographyPresetGuard();

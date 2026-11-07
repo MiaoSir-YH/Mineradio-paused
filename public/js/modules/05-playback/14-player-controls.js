@@ -571,9 +571,6 @@ async function togglePlay(wantedPlaying) {
       audio.__mineradioUserPauseToken = trackSwitchToken;
       var pauseMedia = audio;
       var pauseToken = trackSwitchToken;
-      if (typeof cuefieldAutoMixExecuting !== 'undefined' && cuefieldAutoMixExecuting && typeof resetCuefieldAutoMix === 'function') {
-        resetCuefieldAutoMix('manual-pause');
-      }
       if (
         typeof albumGaplessState !== 'undefined'
         && albumGaplessState
@@ -793,7 +790,6 @@ function cyclePlayMode() {
   if (typeof syncActiveAudioRepeatMode === 'function') syncActiveAudioRepeatMode(audio);
   if (playMode === 'single' && prevMode !== 'single') {
     if (typeof clearAlbumGaplessPreload === 'function') clearAlbumGaplessPreload('play-mode-single');
-    if (typeof resetCuefieldAutoMix === 'function') resetCuefieldAutoMix('play-mode-single');
   }
   updatePlayModeButton(true);
   showToast('播放模式: ' + playModeLabel(playMode));

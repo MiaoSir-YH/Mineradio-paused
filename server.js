@@ -114,11 +114,6 @@ const {
 } = require('./qishui-api');
 const qishuiQrLogin = require('./qishui-qr-login');
 const { clearSpotifyToken } = require('./spotify-api');
-const {
-  appendCuefieldFeedback,
-  readCuefieldFeedbackStats,
-} = require('./cuefield/feedback-log');
-const { planCuefieldTransitionFromCache } = require('./cuefield/mineradio-bridge');
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -149,7 +144,6 @@ const DEFAULT_QQ_COOKIE_FILE = path.join(__dirname, '.qq-cookie');
 const DEFAULT_KUGOU_COOKIE_FILE = path.join(__dirname, '.kugou-cookie');
 const DEFAULT_QISHUI_COOKIE_FILE = path.join(__dirname, '.qishui-cookie');
 const BEATMAP_CACHE_DIR = process.env.MINERADIO_BEAT_CACHE_DIR || 'D:\\MineradioCache\\beatmaps';
-const CUEFIELD_FEEDBACK_FILE = process.env.CUEFIELD_FEEDBACK_FILE || path.join(__dirname, 'data', 'cuefield-feedback.jsonl');
 const LISTEN_SYNC_JOURNAL_FILE = process.env.MINERADIO_LISTEN_SYNC_FILE || path.join(__dirname, 'data', 'listen-sync-journal.json');
 const LISTEN_SYNC_JOURNAL_LIMIT = 600;
 const APP_PACKAGE = readPackageInfo();
@@ -4958,65 +4952,6 @@ async function handleRequest(req, res) {
       reason: !info.allowed ? 'C_DRIVE_DISABLED' : (!info.available ? 'TARGET_DRIVE_UNAVAILABLE' : ''),
       mode: info.allowed && info.available ? 'disk' : 'memory-only',
     });
-    return;
-  }
-
-  // Cuefield only consumes Mineradio's existing local beat-map cache. It never
-  // receives account cookies, song files, or playback URLs on this route.
-  if (pn === '/api/cuefield/transition') {
-    if (req.method !== 'POST') {
-      sendJSON(res, { ok: false, error: 'METHOD_NOT_ALLOWED' }, 405);
-      return;
-    }
-    try {
-      const body = await readRequestBody(req);
-      const plan = planCuefieldTransitionFromCache({
-        fromKey: body.fromKey,
-        toKey: body.toKey,
-        fromLrc: body.fromLrc,
-        toLrc: body.toLrc,
-        exitBias: body.exitBias || 'late',
-        maxEntryTime: Math.max(8, Math.min(32, Number(body.maxEntryTime) || 32)),
-        recentRecipes: Array.isArray(body.recentRecipes) ? body.recentRecipes.slice(-2) : [],
-        minimumListenUntil: body.minimumListenUntil,
-        enableLiveEndCrossfadeFallback: body.enableLiveEndCrossfadeFallback === true,
-        enableCadenceFallback: body.enableCadenceFallback === true,
-        boundaryEvidence: body.boundaryEvidence,
-        tailEvidence: body.tailEvidence,
-        readBeatMapCache,
-      });
-      sendJSON(res, plan);
-    } catch (err) {
-      sendJSON(res, {
-        ok: false,
-        error: err && (err.code || err.message) || 'CUEFIELD_TRANSITION_FAILED',
-      }, 400);
-    }
-    return;
-  }
-
-  // Feedback remains on this computer under Electron userData. The fan project's
-  // optional remote-feedback module is intentionally not wired into Mineradio.
-  if (pn === '/api/cuefield/feedback') {
-    if (req.method === 'GET') {
-      try {
-        sendJSON(res, { ok: true, stats: readCuefieldFeedbackStats(CUEFIELD_FEEDBACK_FILE) });
-      } catch (err) {
-        sendJSON(res, { ok: false, error: err.message || 'CUEFIELD_FEEDBACK_READ_FAILED' }, 500);
-      }
-      return;
-    }
-    if (req.method === 'POST') {
-      try {
-        const body = await readRequestBody(req);
-        const record = appendCuefieldFeedback(CUEFIELD_FEEDBACK_FILE, body);
-        sendJSON(res, { ok: true, record });
-      } catch (err) {
-        sendJSON(res, { ok: false, error: err.code || err.message || 'CUEFIELD_FEEDBACK_SAVE_FAILED' }, 400);
-      }
-      return;
-    }
-    sendJSON(res, { ok: false, error: 'METHOD_NOT_ALLOWED' }, 405);
     return;
   }
 

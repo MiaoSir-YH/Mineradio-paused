@@ -75,7 +75,7 @@ function replaceAudioElementForGraphRecovery(reason, opts) {
 }
 function resetPlaybackAudioGraphForSourceSwitch(reason) {
   if (!audio) return;
-  var preparedGraph = audio.__mineradioPreparedAudioGraph;
+  var preparedSource = audio.__mineradioGaplessSource;
   var previousSourceMedia = audioSourceMedia;
   var sourceUsesCapture = !!(source && source.__mineradioUsesCapture);
   var mediaElementChanged = !!(source && previousSourceMedia && previousSourceMedia !== audio);
@@ -88,26 +88,26 @@ function resetPlaybackAudioGraphForSourceSwitch(reason) {
     return;
   }
   disconnectAudioGraphNodes(!sourceUsesCapture && !mediaElementChanged);
-  if (
-    preparedGraph
-    && preparedGraph.context
-    && preparedGraph.context.state !== 'closed'
-    && preparedGraph.source
-    && preparedGraph.analyser
-    && preparedGraph.beatAnalyser
-    && preparedGraph.gainNode
-  ) {
-    audioCtx = preparedGraph.context;
-    source = preparedGraph.source;
-    analyser = preparedGraph.analyser;
-    beatAnalyser = preparedGraph.beatAnalyser;
-    gainNode = preparedGraph.gainNode;
-    analysisSinkNode = null;
+  if (preparedSource) {
+    delete audio.__mineradioGaplessSource;
+    source = preparedSource;
     audioSourceMedia = audio;
-    audio.__mineradioMediaSourceBound = true;
-    preparedGraph.adopted = true;
-    audioReady = true;
+    initAudio();
   }
+}
+function prepareAlbumGaplessEqualizer(media) {
+  if (!gainNode || !audioCtx || audioCtx.state !== 'running' || media.__mineradioGaplessSource) return;
+  var input = playbackEqualizerInput(audioCtx);
+  var mediaSource;
+  try {
+    mediaSource = audioCtx.createMediaElementSource(media);
+  } catch (_) {
+    return;
+  }
+  media.__mineradioMediaSourceBound = true;
+  media.__mineradioGaplessSource = mediaSource;
+  // The incoming deck's existing media volume fade feeds the same EQ as the active track.
+  mediaSource.connect(input);
 }
 function initAudio() {
   if (!audio) return false;
@@ -190,7 +190,7 @@ function initAudio() {
   source.connect(beatAnalyser);
   if (gainNode) {
     analyser.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
+    gainNode.connect(playbackEqualizerInput(audioCtx));
   } else if (analysisSinkNode) {
     analyser.connect(analysisSinkNode);
     analysisSinkNode.connect(audioCtx.destination);
@@ -493,7 +493,6 @@ function isBackgroundAudioFadeConstrained() {
 function ensureAudiblePlaybackGain(reason) {
   if (!audio || audio.paused || audio.ended || !audio.src) return false;
   if (targetVolume <= 0.001) return false;
-  if (typeof cuefieldAutoMixExecuting !== 'undefined' && cuefieldAutoMixExecuting) return false;
   if (
     typeof albumGaplessState !== 'undefined'
     && albumGaplessState

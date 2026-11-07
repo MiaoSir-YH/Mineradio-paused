@@ -352,11 +352,10 @@ test('album gapless preloads the preferred provider and retains the album contex
   assert.equal(ctx.warnings.length, 0);
 });
 
-test('reordering invalidates prepared album audio and cached AutoMix sources', async () => {
+test('reordering invalidates prepared album audio and resolves the new preferred provider', async () => {
   const ctx = createRuntime();
-  vm.runInContext(read('05-playback/18-cuefield-automix-integration.js'), ctx);
   const source = track('netease');
-  const first = await ctx.cuefieldAutoMixAudioDescriptor(source);
+  const first = await ctx.resolvePlaybackByProviderOrder(source);
   assert.equal(first.song.provider, 'qq');
   const oldMedia = media();
   oldMedia.src = 'https://old.invalid';
@@ -364,13 +363,13 @@ test('reordering invalidates prepared album audio and cached AutoMix sources', a
   ctx.saveAccountProviderOrder(['netease', 'qq', 'kugou', 'qishui']);
   assert.equal(oldMedia.src, '');
   assert.equal(ctx.albumGaplessState.preload, null);
-  const second = await ctx.cuefieldAutoMixAudioDescriptor(source);
+  const second = await ctx.resolvePlaybackByProviderOrder(source);
   assert.equal(second.song.provider, 'netease');
-  assert.notEqual(first.proxyUrl, second.proxyUrl);
+  assert.notEqual(first.data.url, second.data.url);
   ctx.playQueue = [source];
   assert.equal(await ctx.playQueueAt(0, {
-    albumGaplessHandoff: true, preloadedAudio: media(), preloadedData: first.playbackData,
-    preloadedSong: first.song, preloadedProxyAudioUrl: first.proxyUrl,
+    albumGaplessHandoff: true, preloadedAudio: media(), preloadedData: first.data,
+    preloadedSong: first.song, preloadedProxyAudioUrl: '/api/audio?url=' + encodeURIComponent(first.data.url),
   }), true);
   assert.equal(ctx.playQueue[0].provider, 'qq', 'adopting a prepared stream must use its actual provider metadata');
   assert.equal(ctx.warnings.length, 0);

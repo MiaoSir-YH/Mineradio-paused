@@ -83,7 +83,7 @@ jobs:
           $sourceFiles = @(
             'public/js/modules/05-playback/11-provider-fallback.js',
             'public/js/modules/05-playback/13-playback-start-audio.js',
-            'public/js/modules/05-playback/18-cuefield-automix-integration.js',
+            'public/js/modules/05-playback/16-playback-equalizer.js',
             'public/js/modules/05-playback/14a-system-media-session.js',
             'public/js/modules/05-playback/14-player-controls.js',
             'public/js/modules/05-playback/08-audio-graph-controls.js',

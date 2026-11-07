@@ -562,11 +562,8 @@ async function resolvePlaybackByProviderOrder(song, opts) {
 }
 function invalidatePlaybackProviderOrder() {
   if (typeof clearAlbumGaplessPreload === 'function') clearAlbumGaplessPreload('provider-order');
-  if (typeof resetCuefieldAutoMix === 'function') resetCuefieldAutoMix('provider-order');
-  if (typeof cuefieldAudioDescriptorCache !== 'undefined') cuefieldAudioDescriptorCache = {};
   if (typeof audio === 'undefined' || !audio || audio.paused) return;
   if (typeof scheduleAlbumGaplessPreloadForCurrent === 'function') scheduleAlbumGaplessPreloadForCurrent(trackSwitchToken, 'provider-order');
-  if (typeof scheduleCuefieldAutoMixPrepare === 'function') scheduleCuefieldAutoMixPrepare(trackSwitchToken, currentIdx, 720);
 }
 function alternatePlaybackProvider(song) {
   return alternatePlaybackProviders(song)[0] || '';
@@ -633,7 +630,6 @@ function settleSourceFallbackTerminal(idx, token, message, opts) {
   playToggleBusy = false;
   markQueueItemPlaybackFailed(idx, recovery);
   if (typeof clearAlbumGaplessPreload === 'function') clearAlbumGaplessPreload('source-fallback-terminal');
-  if (typeof resetCuefieldAutoMix === 'function') resetCuefieldAutoMix('source-fallback-terminal');
   if (typeof clearPlaybackResumeWatchdogs === 'function') clearPlaybackResumeWatchdogs();
   if (typeof playbackResumeRecovery !== 'undefined' && playbackResumeRecovery) {
     playbackResumeRecovery.serial = (Number(playbackResumeRecovery.serial) || 0) + 1;

@@ -53,6 +53,7 @@ function setHomeControlsLocked(locked) {
   if (bottom && locked && !hasActivePlaybackControls()) bottom.classList.add('soft-hidden');
   if (bottom && !locked) bottom.classList.remove('soft-hidden');
   if (locked) closeMiniQueue();
+  if (bottom && locked && bottom.classList.contains('equalizer-open')) setPlaybackEqualizerOpen(false);
 }
 function openHomePlayerConsole() {
   setHomeControlsLocked(false);

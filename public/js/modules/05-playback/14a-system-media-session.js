@@ -41,7 +41,6 @@ function seekSystemMedia(details, offset) {
   if (!isFinite(target)) return;
   if (typeof progressDragState !== 'undefined' && progressDragState.active) return;
   target = Math.max(0, Math.min(audio.duration, target));
-  if (typeof resetCuefieldAutoMix === 'function') resetCuefieldAutoMix('manual-seek');
   if (typeof clearAlbumGaplessPreload === 'function') clearAlbumGaplessPreload('manual-seek');
   if (typeof commitProgressSeek === 'function') {
     // A system seek has no pointer-down step to capture the current media.

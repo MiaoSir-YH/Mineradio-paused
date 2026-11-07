@@ -46,7 +46,7 @@ function setControlsHidden(hidden) {
   if (!bar) return;
   if (hidden && desktopWallpaperKeepsPlayerConsoleVisible()) hidden = false;
   if (hidden && controlsRevealHoldUntil > performance.now()) hidden = false;
-  if (hidden && (controlsHovering || miniQueueOpen)) hidden = false;
+  if (hidden && (controlsHovering || miniQueueOpen || bar.classList.contains('equalizer-open'))) hidden = false;
   bar.classList.toggle('soft-hidden', !!hidden && controlsAutoHide && bar.classList.contains('visible'));
   if (hidden && typeof closeLyricTimingPopover === 'function') closeLyricTimingPopover(true);
   bar.style.pointerEvents = '';
@@ -72,6 +72,7 @@ function suppressBottomControlsForShelf(duration) {
   if (miniQueueOpen) closeMiniQueue();
   var bar = document.getElementById('bottom-bar');
   if (bar) {
+    if (bar.classList.contains('equalizer-open')) setPlaybackEqualizerOpen(false);
     bar.classList.remove('visible', 'soft-hidden');
     bar.style.pointerEvents = '';
   }

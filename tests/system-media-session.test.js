@@ -28,7 +28,7 @@ function setup(available = true) {
       assert.equal(ctx.progressDragState.media, ctx.audio); assert.equal(ctx.progressDragState.mediaSrc, ctx.audio.src);
       assert.equal(ctx.progressDragState.previewDuration, ctx.audio.duration);
       calls.push(['seek', target, resume]); ctx.audio.currentTime = target;
-    }, resetCuefieldAutoMix() { calls.push('reset-mix'); }, clearAlbumGaplessPreload() { calls.push('clear-gapless'); }
+    }, clearAlbumGaplessPreload() { calls.push('clear-gapless'); }
   });
   vm.runInContext(source, ctx);
   return { ctx, session, actions, positions, calls };
